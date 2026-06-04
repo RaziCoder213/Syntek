@@ -4,7 +4,13 @@ import pg from "pg";
 import dotenv from "dotenv";
 import { ImapFlow } from "imapflow";
 import crypto from "crypto";
+import path from "path";
+import { fileURLToPath } from "url";
+
 dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const { Pool } = pg;
 
@@ -3329,6 +3335,13 @@ async function detectMeetingBookingIntent(email, config, userId) {
     return { isMeetingAgreed: false };
   }
 }
+
+// Serve React built frontend in production
+app.use(express.static(path.join(__dirname, "dist")));
+
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "dist", "index.html"));
+});
 
 // App initialization
 setupDatabase().then(() => {
