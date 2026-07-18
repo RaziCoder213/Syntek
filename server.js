@@ -74,38 +74,47 @@ const globalRateLimit = rateLimiter(1000, 15 * 60 * 1000); // 1000 requests per 
 app.use("/api/", globalRateLimit);
 
 // Database connection pool setup
-const poolConfig = {
-  user: process.env.DB_USER || "postgres",
-  password: process.env.DB_PASSWORD || "postgres",
-  host: process.env.DB_HOST || "localhost",
-  port: process.env.DB_PORT || 5432,
-  database: process.env.DB_DATABASE || "syntek_db"
-};
+const poolConfig = process.env.DATABASE_URL 
+  ? { 
+      connectionString: process.env.DATABASE_URL,
+      ssl: process.env.DATABASE_URL.includes("localhost") || process.env.DATABASE_URL.includes("127.0.0.1") 
+        ? false 
+        : { rejectUnauthorized: false }
+    }
+  : {
+      user: process.env.DB_USER || "postgres",
+      password: process.env.DB_PASSWORD || "postgres",
+      host: process.env.DB_HOST || "localhost",
+      port: process.env.DB_PORT || 5432,
+      database: process.env.DB_DATABASE || "syntek_db"
+    };
 
 const pool = new Pool(poolConfig);
 
 // Initialize DB schema automatically
 async function setupDatabase() {
-  // 1. Establish connection to postgres administrative DB first to verify database exists
-  const adminPool = new Pool({
-    ...poolConfig,
-    database: "postgres"
-  });
+  // 1. Establish connection to postgres administrative DB first to verify database exists (only if not using DATABASE_URL connection string)
+  if (!process.env.DATABASE_URL) {
+    const adminPool = new Pool({
+      ...poolConfig,
+      database: "postgres"
+    });
 
-  try {
-    const res = await adminPool.query(
-      "SELECT 1 FROM pg_database WHERE datname = $1",
-      [poolConfig.database]
-    );
-    if (res.rowCount === 0) {
-      console.log(`Database '${poolConfig.database}' not found. Auto-creating database...`);
-      await adminPool.query(`CREATE DATABASE ${poolConfig.database}`);
-      console.log(`Database created successfully.`);
+    try {
+      const res = await adminPool.query(
+        "SELECT 1 FROM pg_database WHERE datname = $1",
+        [poolConfig.database]
+      );
+      if (res.rowCount === 0) {
+        console.log(`Database '${poolConfig.database}' not found. Auto-creating database...`);
+        await adminPool.query(`CREATE DATABASE ${poolConfig.database}`);
+        console.log(`Database created successfully.`);
+      }
+    } catch (err) {
+      console.error("Database pre-flight check failed:", err.message);
+    } finally {
+      await adminPool.end();
     }
-  } catch (err) {
-    console.error("Database pre-flight check failed:", err.message);
-  } finally {
-    await adminPool.end();
   }
 
   // 2. Re-establish connection pool to the app database and create tables
