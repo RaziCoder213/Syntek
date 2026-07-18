@@ -1,19 +1,20 @@
-import React from "react";
+import { useMemo } from "react";
 
-function MiniBarChart({ data, color = "#c8ff00" }) {
+function MiniBarChart({ data, color = "var(--brand)" }) {
   const max = Math.max(...data, 1);
   return (
-    <div style={{ display: "flex", alignItems: "flex-end", gap: "4px", height: "32px", marginTop: "12px" }}>
-      {data.map((val, idx) => (
+    <div style={{ display: "flex", alignItems: "flex-end", gap: 3, height: 36 }}>
+      {data.map((v, i) => (
         <div
-          key={idx}
+          key={i}
           style={{
             flex: 1,
-            height: `${(val / max) * 100}%`,
-            backgroundColor: color,
-            borderRadius: "3px",
-            opacity: idx === data.length - 1 ? 1 : 0.45,
-            transition: "height 0.6s cubic-bezier(0.4, 0, 0.2, 1)"
+            height: `${Math.round((v / max) * 100)}%`,
+            minHeight: 3,
+            background: color,
+            borderRadius: 3,
+            opacity: i === data.length - 1 ? 1 : 0.4 + (i / data.length) * 0.4,
+            transition: "height 0.5s",
           }}
         />
       ))}
@@ -21,183 +22,237 @@ function MiniBarChart({ data, color = "#c8ff00" }) {
   );
 }
 
-function StatCard({ label, value, sub, chart, color = "#c8ff00" }) {
-  return (
-    <div className="glass-panel" style={{ padding: "20px", display: "flex", flexDirection: "column", gap: "6px" }}>
-      <span style={{ fontSize: "11px", color: "var(--text-secondary)", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 700 }}>
-        {label}
-      </span>
-      <span style={{ fontSize: "28px", fontWeight: 800, color: "var(--text-primary)", letterSpacing: "-0.03em" }}>
-        {value}
-      </span>
-      {sub && <span style={{ fontSize: "12px", color: "var(--text-muted)", display: "flex", alignItems: "center", gap: "4px" }}>{sub}</span>}
-      {chart && <MiniBarChart data={chart} color={color} />}
-    </div>
-  );
-}
+const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-export default function Dashboard({ leads, emails, setTab, triggerSearch, analytics }) {
-  const interestedCount = leads.filter(l => l.status === "interested").length;
-  const contactedCount = leads.filter(l => l.status === "contacted").length;
-  const repliedCount = leads.filter(l => l.status === "replied").length;
-  const totalLeads = leads.length;
-  
-  // Pipeline Value = Closed deals * 1400 + Interested * 800
-  const closedCount = leads.filter(l => l.status === "closed").length;
-  const estPipelineValue = (closedCount * 1200) + (interestedCount * 450);
+export default function Dashboard({ leads, analytics, settings, onNavigate }) {
+  const stats = useMemo(() => {
+    const total       = leads.length;
+    const contacted   = leads.filter(l => l.status === "contacted" || l.status === "replied").length;
+    const noEmail     = leads.filter(l => l.status === "no_email" || !l.email).length;
+    const pending     = leads.filter(l => l.status === "not contacted").length;
+    const replied     = leads.filter(l => l.status === "replied").length;
+    const convRate    = contacted > 0 ? ((replied / contacted) * 100).toFixed(1) : 0;
+    return { total, contacted, noEmail, pending, replied, convRate };
+  }, [leads]);
 
-  // Recent simulated logs of activities
-  const recentActivities = [
-    { icon: "⚡", text: "AI Auto-Optimized: Adjusted Denver email subject lines", time: "10m ago", color: "var(--color-lime)" },
-    { icon: "✉️", text: `${emails.filter(e => !e.read).length} new replies waiting in your Smart Inbox`, time: "1h ago", color: "var(--color-indigo)" },
-    { icon: "🔍", text: `Yelp & Google Maps scan discovered ${leads.filter(l => l.status === 'not contacted').length} new business leads`, time: "3h ago", color: "var(--color-amber)" },
-    { icon: "🔥", text: "Lead 'Salt & Oak' marked as Interested by AI strategy analyser", time: "5h ago", color: "var(--color-emerald)" },
-    { icon: "✅", text: "Successfully connected to Outbox via Secure SMTP", time: "1d ago", color: "var(--color-teal)" }
-  ];
+  const recentLeads = useMemo(() =>
+    [...leads].sort((a, b) => b.id - a.id).slice(0, 6),
+  [leads]);
+
+  const weeklyData  = analytics.weeklyLeads || [0,0,0,0,0,0,0];
+  const opensByDay  = analytics.opensByDay  || [0,0,0,0,0,0,0];
+
+  const statusColor = { "not contacted": "badge-neutral", contacted: "badge-brand", replied: "badge-success", no_email: "badge-warning", won: "badge-success" };
+  const wsColor = { active: "badge-success", no_website: "badge-danger", down: "badge-warning" };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "32px", animation: "fadeIn 0.4s ease" }}>
-      {/* Welcome Banner */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "16px" }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {/* Header */}
+      <div className="section-header">
         <div>
-          <h1 style={{ fontSize: "28px", fontWeight: 800, letterSpacing: "-0.03em", color: "var(--text-primary)", margin: 0 }}>
-            Outreach Control Center
-          </h1>
-          <p style={{ color: "var(--text-secondary)", fontSize: "14px", marginTop: "4px" }}>
-            Real-time status of your autonomous B2B restaurant campaigns.
-          </p>
+          <div className="section-title">Dashboard</div>
+          <div className="section-desc">Overview of your outreach pipeline.</div>
         </div>
-        <button
-          className="btn btn-lime glow-card"
-          onClick={() => { setTab("Lead Finder"); setTimeout(() => triggerSearch(), 100); }}
-        >
-          <span style={{ fontSize: "14px" }}>⚡</span> Discover 100 Local Leads
+        <button className="btn btn-primary" onClick={() => onNavigate("Leads")}>
+          ◎ Find New Leads
         </button>
       </div>
 
-      {/* Stats Grid */}
-      <div className="grid-5">
-        <StatCard 
-          label="Total Scraped Leads" 
-          value={totalLeads} 
-          sub={`+${leads.filter(l => l.status === "not contacted").length} new profiles this week`} 
-          chart={[12, 19, 23, 17, 32, 28, totalLeads]} 
-          color="var(--color-indigo)" 
-        />
-        <StatCard 
-          label="Outreach Sent" 
-          value={analytics.emailsSent} 
-          sub={`Avg. delivery success 98.4%`} 
-          chart={analytics.weeklyLeads} 
-          color="var(--color-amber)" 
-        />
-        <StatCard 
-          label="Open Rate" 
-          value={`${analytics.openRate}%`} 
-          sub="🎯 Goal target: 45%" 
-          chart={analytics.opensByDay} 
-          color="var(--color-lime)" 
-        />
-        <StatCard 
-          label="AI Smart Replies" 
-          value={`${analytics.replyRate}%`} 
-          sub={`Inbox: ${emails.length} active threads`} 
-          chart={[8, 11, 10, 14, 12, 9, 12]} 
-          color="var(--color-emerald)" 
-        />
-        <StatCard 
-          label="Pipeline Value" 
-          value={`$${estPipelineValue.toLocaleString()}`} 
-          sub="Est. revenue in stages" 
-          chart={[1500, 2400, 3100, 2900, 4200, 4800, estPipelineValue]} 
-          color="var(--color-teal)" 
-        />
+      {/* Metric cards */}
+      <div className="grid-4">
+        <div className="metric-card">
+          <div className="metric-icon brand">◎</div>
+          <div className="metric-value">{stats.total}</div>
+          <div className="metric-label">Total Leads</div>
+          <div className="metric-delta flat">{stats.pending} pending contact</div>
+        </div>
+        <div className="metric-card">
+          <div className="metric-icon success">✉</div>
+          <div className="metric-value">{analytics.emailsSent || stats.contacted}</div>
+          <div className="metric-label">Emails Sent</div>
+          <div className="metric-delta up">↑ {analytics.openRate || 0}% open rate</div>
+        </div>
+        <div className="metric-card">
+          <div className="metric-icon info">↩</div>
+          <div className="metric-value">{stats.replied}</div>
+          <div className="metric-label">Replies Received</div>
+          <div className="metric-delta up">↑ {stats.convRate}% conversion</div>
+        </div>
+        <div className="metric-card">
+          <div className="metric-icon warning">⚡</div>
+          <div className="metric-value">{settings.isActive ? "ON" : "OFF"}</div>
+          <div className="metric-label">Autopilot</div>
+          <div className={`metric-delta ${settings.isActive ? "up" : "flat"}`}>
+            {settings.isActive ? "Running daily" : "Configure in Automation"}
+          </div>
+        </div>
       </div>
 
-      {/* Main Grid: Activity & Pipeline overview */}
-      <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: "24px", flexWrap: "wrap" }}>
-        
-        {/* Activity feed */}
-        <div className="glass-panel" style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <h3 style={{ fontSize: "16px", fontWeight: 700, color: "var(--text-primary)", letterSpacing: "-0.01em" }}>Autonomous Activity Log</h3>
-            <span style={{ fontSize: "11px", color: "var(--color-lime)", fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase" }}>
-              ● AI LIVE RUNNING
-            </span>
+      {/* Charts row */}
+      <div className="grid-2">
+        <div className="card">
+          <div className="card-header">
+            <span className="card-title">Leads This Week</span>
+            <span style={{ fontSize: 12, color: "var(--text-3)" }}>Daily</span>
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-            {recentActivities.map((act, index) => (
-              <div 
-                key={index} 
-                style={{ 
-                  display: "flex", 
-                  gap: "14px", 
-                  alignItems: "center", 
-                  padding: "12px", 
-                  background: "var(--bg-translucent-subtle)", 
-                  border: "1px solid var(--border-translucent)", 
-                  borderRadius: "10px",
-                  transition: "background 0.2s"
-                }}
-              >
-                <div style={{
-                  width: "32px",
-                  height: "32px",
-                  borderRadius: "8px",
-                  background: `${act.color}15`,
-                  color: act.color,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontSize: "14px",
-                  fontWeight: "bold"
-                }}>
-                  {act.icon}
-                </div>
-                <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "2px" }}>
-                  <span style={{ fontSize: "13px", color: "var(--text-primary)", fontWeight: 550 }}>{act.text}</span>
-                  <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>{act.time}</span>
-                </div>
-              </div>
+          <MiniBarChart data={weeklyData} color="var(--brand)" />
+          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
+            {DAYS.map(d => (
+              <span key={d} style={{ fontSize: 10, color: "var(--text-4)" }}>{d}</span>
             ))}
           </div>
         </div>
+        <div className="card">
+          <div className="card-header">
+            <span className="card-title">Email Opens</span>
+            <span style={{ fontSize: 12, color: "var(--text-3)" }}>Daily</span>
+          </div>
+          <MiniBarChart data={opensByDay} color="var(--success)" />
+          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
+            {DAYS.map(d => (
+              <span key={d} style={{ fontSize: 10, color: "var(--text-4)" }}>{d}</span>
+            ))}
+          </div>
+        </div>
+      </div>
 
-        {/* Pipeline conversion summary */}
-        <div className="glass-panel" style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
-          <h3 style={{ fontSize: "16px", fontWeight: 700, color: "var(--text-primary)", letterSpacing: "-0.01em" }}>Stage Conversion Ratio</h3>
-          
-          <div style={{ display: "flex", flexDirection: "column", gap: "18px" }}>
+      {/* Pipeline overview + recent leads */}
+      <div className="grid-2">
+        {/* Pipeline summary */}
+        <div className="card">
+          <div className="card-header">
+            <span className="card-title">Pipeline Summary</span>
+            <button className="btn btn-ghost btn-sm" onClick={() => onNavigate("Pipeline")}>View board →</button>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {[
-              { label: "Scraped Leads", count: totalLeads, percent: 100, color: "var(--color-indigo)" },
-              { label: "Contacted / In outreach", count: contactedCount + repliedCount + interestedCount + closedCount, percent: Math.round(((contactedCount + repliedCount + interestedCount + closedCount) / Math.max(totalLeads, 1)) * 100), color: "var(--color-amber)" },
-              { label: "Replied Inquiries", count: repliedCount + interestedCount + closedCount, percent: Math.round(((repliedCount + interestedCount + closedCount) / Math.max(totalLeads, 1)) * 100), color: "var(--color-indigo)" },
-              { label: "Hot / Interested Prospects", count: interestedCount + closedCount, percent: Math.round(((interestedCount + closedCount) / Math.max(totalLeads, 1)) * 100), color: "var(--color-emerald)" },
-              { label: "Closed / Signed Contracts", count: closedCount, percent: Math.round((closedCount / Math.max(totalLeads, 1)) * 100), color: "var(--color-lime)" }
-            ].map((stage, idx) => (
-              <div key={idx} style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "13px" }}>
-                  <span style={{ color: "var(--text-secondary)", fontWeight: 500 }}>{stage.label}</span>
-                  <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-                    <span style={{ color: "var(--text-primary)", fontWeight: 700 }}>{stage.count}</span>
-                    <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>({stage.percent}%)</span>
-                  </div>
-                </div>
-                <div style={{ height: "6px", background: "var(--bg-translucent-mild)", borderRadius: "3px", overflow: "hidden", display: "flex" }}>
+              { label: "Not Contacted", value: stats.pending,   color: "var(--text-3)" },
+              { label: "Contacted",     value: stats.contacted, color: "var(--brand)" },
+              { label: "Replied",       value: stats.replied,   color: "var(--success)" },
+              { label: "No Email",      value: stats.noEmail,   color: "var(--warning)" },
+            ].map(s => (
+              <div key={s.label} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 12, color: "var(--text-3)", width: 110, flexShrink: 0 }}>{s.label}</span>
+                <div style={{ flex: 1, height: 6, background: "var(--bg-overlay)", borderRadius: 99, overflow: "hidden" }}>
                   <div style={{
-                    width: `${stage.percent}%`,
                     height: "100%",
-                    background: stage.color,
-                    borderRadius: "3px",
-                    boxShadow: `0 0 8px ${stage.color}40`,
-                    transition: "width 0.8s cubic-bezier(0.16, 1, 0.3, 1)"
+                    width: stats.total ? `${(s.value / stats.total) * 100}%` : "0%",
+                    background: s.color,
+                    borderRadius: 99,
+                    transition: "width 0.6s",
                   }} />
                 </div>
+                <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-2)", minWidth: 24, textAlign: "right" }}>{s.value}</span>
               </div>
             ))}
           </div>
         </div>
 
+        {/* Automation status */}
+        <div className="card">
+          <div className="card-header">
+            <span className="card-title">Automation Status</span>
+            <button className="btn btn-ghost btn-sm" onClick={() => onNavigate("Automation")}>Configure →</button>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <span style={{ fontSize: 13, color: "var(--text-2)" }}>Autopilot</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span className={`status-dot ${settings.isActive ? "green pulse" : "gray"}`} />
+                <span style={{ fontSize: 12, fontWeight: 600, color: settings.isActive ? "var(--success)" : "var(--text-3)" }}>
+                  {settings.isActive ? "Active" : "Inactive"}
+                </span>
+              </div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <span style={{ fontSize: 13, color: "var(--text-2)" }}>Mode</span>
+              <span className="badge badge-brand" style={{ textTransform: "capitalize" }}>
+                {(settings.autopilotMode || "both").replace("_", " ")}
+              </span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <span style={{ fontSize: 13, color: "var(--text-2)" }}>Target niche</span>
+              <span style={{ fontSize: 12, color: "var(--text-1)", fontWeight: 500 }}>{settings.niche || "—"}</span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <span style={{ fontSize: 13, color: "var(--text-2)" }}>Location</span>
+              <span style={{ fontSize: 12, color: "var(--text-1)", fontWeight: 500 }}>{settings.location || "—"}</span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <span style={{ fontSize: 13, color: "var(--text-2)" }}>Gmail</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span className={`status-dot ${settings.gmailUser ? "green" : "red"}`} />
+                <span style={{ fontSize: 12, color: settings.gmailUser ? "var(--success)" : "var(--danger)" }}>
+                  {settings.gmailUser ? "Connected" : "Not connected"}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Recent leads table */}
+      <div className="card" style={{ padding: 0 }}>
+        <div className="card-header" style={{ padding: "16px 20px", borderBottom: "1px solid var(--border-1)" }}>
+          <span className="card-title">Recent Leads</span>
+          <button className="btn btn-ghost btn-sm" onClick={() => onNavigate("Leads")}>View all →</button>
+        </div>
+        {recentLeads.length === 0 ? (
+          <div className="empty-state" style={{ padding: 40 }}>
+            <div className="empty-state-icon">◎</div>
+            <div className="empty-state-title">No leads yet</div>
+            <div className="empty-state-desc">Go to Lead Finder to scrape your first batch of qualified leads.</div>
+            <button className="btn btn-primary" style={{ marginTop: 8 }} onClick={() => onNavigate("Leads")}>
+              Start Scraping
+            </button>
+          </div>
+        ) : (
+          <div className="table-wrap" style={{ border: "none", borderRadius: 0 }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Business</th>
+                  <th>Location</th>
+                  <th>Email</th>
+                  <th>Website</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recentLeads.map(l => (
+                  <tr key={l.id}>
+                    <td>
+                      <div style={{ fontWeight: 600, color: "var(--text-1)", fontSize: 13 }}>{l.name}</div>
+                      <div style={{ fontSize: 11.5, color: "var(--text-4)" }}>{l.type}</div>
+                    </td>
+                    <td>{l.city}</td>
+                    <td style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>
+                      {l.email ? (
+                        <a href={`mailto:${l.email}`} style={{ color: "var(--brand)" }}>{l.email}</a>
+                      ) : (
+                        <span style={{ color: "var(--text-4)" }}>—</span>
+                      )}
+                    </td>
+                    <td>
+                      {l.website ? (
+                        <span className={`badge ${wsColor[l.website_status] || "badge-neutral"}`}>
+                          {l.website_status || "active"}
+                        </span>
+                      ) : (
+                        <span style={{ color: "var(--text-4)", fontSize: 12 }}>No website</span>
+                      )}
+                    </td>
+                    <td>
+                      <span className={`badge ${statusColor[l.status] || "badge-neutral"}`}>
+                        {l.status?.replace("_", " ") || "new"}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -1,707 +1,521 @@
-import React, { useState } from "react";
+import { useState, useEffect } from "react";
 
-export default function Inbox({ leads, setLeads, emails, setEmails, showToast, geminiKey, gmailUser, gmailPass }) {
-  const [selectedEmail, setSelectedEmail] = useState(null);
-  const [emailFilter, setEmailFilter] = useState("all");
+const TABS = [
+  { id: "inbox",   label: "📬 Inbox"   },
+  { id: "pending", label: "⏳ Pending Replies" },
+  { id: "sent",    label: "📤 Sent"    },
+];
+
+export default function Inbox({ emails, setEmails, settings, showToast, refreshData }) {
+  const [selected, setSelected]   = useState(null);
+  const [tab, setTab]             = useState("inbox");
+  const [search, setSearch]       = useState("");
   const [replyText, setReplyText] = useState("");
-  const [aiLoading, setAiLoading] = useState(false);
-  const [syncing, setSyncing] = useState(false);
+  const [replying, setReplying]   = useState(false);
+  const [sending, setSending]     = useState(false);   // for pending-reply approval
+  const [syncing, setSyncing]     = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
+  const [openFilter, setOpenFilter] = useState("all");
 
-  const syncMailbox = async () => {
-    setSyncing(true);
+  const handleClearInbox = async () => {
+    if (!window.confirm("Are you sure you want to delete all emails? This cannot be undone.")) return;
     try {
-      const response = await fetch("/api/emails/sync", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" }
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to sync inbox");
-      }
-      
-      showToast(data.message || `Inbox synced successfully!`, "success");
-      
-      // Refresh emails list
-      const emailsRes = await fetch("/api/emails");
-      if (emailsRes.ok) {
-        const emailData = await emailsRes.json();
-        const mapped = emailData.map(e => ({
-          id: e.id,
-          from: e.from_name,
-          email: e.from_email,
-          company: e.company,
-          subject: e.subject,
-          preview: e.preview,
-          time: e.time_received,
-          read: e.is_read,
-          category: e.category,
-          labels: e.labels || []
-        }));
-        setEmails(mapped);
-      }
-      
-      // Refresh leads list
-      const leadsRes = await fetch("/api/leads");
-      if (leadsRes.ok) {
-        const latestLeads = await leadsRes.json();
-        const parsed = latestLeads.map(l => ({
-          ...l,
-          rating: l.rating ? parseFloat(l.rating) : 4.0,
-          reviews: l.reviews ? parseInt(l.reviews) : 0
-        }));
-        setLeads(parsed);
+      const res = await fetch("/api/emails", { method: "DELETE" });
+      if (res.ok) {
+        setEmails([]);
+        setSelected(null);
+        showToast("Inbox cleared successfully.", "success");
+      } else {
+        showToast("Failed to clear inbox.", "danger");
       }
     } catch (err) {
       console.error(err);
-      showToast(err.message || "Failed to sync inbox", "danger");
+      showToast("Network error clearing inbox.", "danger");
+    }
+  };
+
+  const triggerSync = async () => {
+    if (syncing) return;
+    setSyncing(true);
+    try {
+      const res = await fetch("/api/emails/sync", { method: "POST" });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.newReplies > 0) {
+          showToast(`Synced! Found ${data.newReplies} new replies.`, "success");
+        }
+        if (typeof refreshData === "function") {
+          await refreshData();
+        }
+      } else {
+        const err = await res.json().catch(() => ({}));
+        showToast(`Sync warning: ${err.error || "Mailbox sync completed."}`, "warning");
+      }
+    } catch (err) {
+      console.error("Sync failed:", err);
+      showToast("Network error syncing mailbox.", "danger");
     } finally {
       setSyncing(false);
     }
   };
 
-  const [threadWidth, setThreadWidth] = useState(360);
-  const [sidebarWidth, setSidebarWidth] = useState(240);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  useEffect(() => {
+    triggerSync();
+  }, []);
 
-  const startResizeSidebar = (e) => {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startWidth = sidebarWidth;
-    
-    const onMouseMove = (moveEvent) => {
-      const newWidth = Math.max(160, Math.min(400, startWidth + (moveEvent.clientX - startX)));
-      setSidebarWidth(newWidth);
-    };
-    
-    const onMouseUp = () => {
-      window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("mouseup", onMouseUp);
-    };
-    
-    window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("mouseup", onMouseUp);
-  };
+  /* ── Filter helpers ── */
+  const inboxEmails   = emails.filter(e => e.labels?.includes("inbox") || e.category === "unread");
+  const pendingEmails = emails.filter(e => e.labels?.includes("pending_reply") || e.category === "draft");
+  const sentEmails    = emails.filter(e => e.labels?.includes("sent")  || e.category === "sent");
 
-  const startResizeThread = (e) => {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startWidth = threadWidth;
-    
-    const onMouseMove = (moveEvent) => {
-      const newWidth = Math.max(240, Math.min(600, startWidth + (moveEvent.clientX - startX)));
-      setThreadWidth(newWidth);
-    };
-    
-    const onMouseUp = () => {
-      window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("mouseup", onMouseUp);
-    };
-    
-    window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("mouseup", onMouseUp);
-  };
+  const tabMap = { inbox: inboxEmails, pending: pendingEmails, sent: sentEmails };
 
-  // Filter messages based on side-bar clicks
-  const filteredEmails = emails.filter(email => {
-    if (emailFilter === "all") return true;
-    if (emailFilter === "unread") return !email.read && email.category !== "sent";
-    if (emailFilter === "interested") return email.category === "interested" || email.labels.includes("hot-lead");
-    if (emailFilter === "not-interested") return email.category === "not-interested";
-    if (emailFilter === "sent") return email.category === "sent" || email.labels.includes("sent");
+  const filtered = (tabMap[tab] || []).filter(e => {
+    // Search filter
+    if (search) {
+      const q = search.toLowerCase();
+      const matchesSearch = 
+        (e.from_name  || e.from  || "").toLowerCase().includes(q) ||
+        (e.company    || "").toLowerCase().includes(q) ||
+        (e.subject    || "").toLowerCase().includes(q);
+      if (!matchesSearch) return false;
+    }
+
+    // Open/unopened or Read/unread filter
+    if (openFilter === "opened") {
+      if (tab === "sent") {
+        return e.lead_is_opened === true;
+      } else {
+        return e.is_read === true || e.read === true;
+      }
+    } else if (openFilter === "unopened") {
+      if (tab === "sent") {
+        return !e.lead_is_opened;
+      } else {
+        return !e.is_read && !e.read;
+      }
+    }
+
     return true;
   });
 
-  const getLabelStyle = (label) => {
-    switch (label) {
-      case "hot-lead":
-        return { bg: "rgba(239, 68, 68, 0.1)", text: "var(--color-crimson)", border: "rgba(239, 68, 68, 0.25)" };
-      case "demo-requested":
-        return { bg: "rgba(200, 255, 0, 0.1)", text: "var(--color-lime)", border: "rgba(200, 255, 0, 0.25)" };
-      case "follow-up":
-        return { bg: "rgba(245, 158, 11, 0.1)", text: "var(--color-amber)", border: "rgba(245, 158, 11, 0.25)" };
-      default:
-        return { bg: "rgba(255, 255, 255, 0.05)", text: "var(--text-secondary)", border: "rgba(255,255,255,0.1)" };
-    }
-  };
+  const unreadCount   = inboxEmails.filter(e => !e.is_read && !e.read).length;
+  const pendingCount  = pendingEmails.length;
 
-  // Generate Smart Reply with Gemini API or fallback simulator
-  const generateSmartReply = async (email) => {
-    setAiLoading(true);
-    setReplyText("");
-
+  /* ── Actions ── */
+  async function markRead(email) {
+    if (email.is_read || email.read) return;
     try {
-      const response = await fetch(`/api/emails/${email.id}/generate-reply`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" }
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to generate smart reply");
-      }
-      setReplyText(data.replyText);
-      showToast("AI Smart Reply generated!", "success");
-    } catch (err) {
-      console.error(err);
-      showToast(err.message || "Could not generate reply using API. Using local draft.", "warn");
-      setReplyText(`Hi ${email.from.split(" ")[0]},\n\nThanks for getting back to me! I'd love to jump on a quick 10-minute call to answer any questions you have and demonstrate our AI reservation assistant.\n\nAre you free this Thursday around 11:00 AM?\n\nBest,\nMuhammad Razi\nIndependent Developer`);
-    } finally {
-      setAiLoading(false);
-    }
-  };
-
-  const sendEmailReply = async () => {
-    if (!replyText.trim()) return;
-    try {
-      const response = await fetch(`/api/emails/${selectedEmail.id}/reply`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ replyText, gmailUser, gmailPass })
-      });
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || "Failed to send reply");
-      }
-      
-      if (gmailUser && gmailPass) {
-        showToast("Smart reply successfully sent through secure SMTP!", "success");
-      } else {
-        showToast("Simulated reply processed successfully!", "success");
-      }
-      
-      // Refresh emails and leads in the parent component
-      const emailsRes = await fetch("/api/emails");
-      if (emailsRes.ok) {
-        const data = await emailsRes.json();
-        const mapped = data.map(e => ({
-          id: e.id,
-          from: e.from_name,
-          email: e.from_email,
-          company: e.company,
-          subject: e.subject,
-          preview: e.preview,
-          time: e.time_received,
-          read: e.is_read,
-          category: e.category,
-          labels: e.labels || []
-        }));
-        setEmails(mapped);
-      }
-      
-      const leadsRes = await fetch("/api/leads");
-      if (leadsRes.ok) {
-        const latestLeads = await leadsRes.json();
-        const parsed = latestLeads.map(l => ({
-          ...l,
-          rating: l.rating ? parseFloat(l.rating) : 4.0,
-          reviews: l.reviews ? parseInt(l.reviews) : 0
-        }));
-        setLeads(parsed);
-      }
-      
-      setReplyText("");
-      setSelectedEmail(null);
-    } catch (err) {
-      console.error(err);
-      showToast(err.message || "Failed to send reply to backend", "danger");
-    }
-  };
-
-  const tagEmailCategory = async (cat) => {
-    if (!selectedEmail) return;
-    const newLabels = [...new Set([...selectedEmail.labels, cat])];
-    try {
-      const emailRes = await fetch(`/api/emails/${selectedEmail.id}`, {
+      await fetch(`/api/emails/${email.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ category: cat, labels: newLabels })
+        body: JSON.stringify({ is_read: true }),
       });
-      if (!emailRes.ok) throw new Error("Failed to update email category");
-      
-      setEmails(es => es.map(e => e.id === selectedEmail.id ? { ...e, category: cat, labels: newLabels } : e));
-      setSelectedEmail(prev => ({ ...prev, category: cat, labels: newLabels }));
+      setEmails(prev => prev.map(e => e.id === email.id ? { ...e, is_read: true, read: true } : e));
+    } catch { /* silent */ }
+  }
 
-      // Promote the lead in the Leads Database
-      const matchedLead = leads.find(l => 
-        l.name.toLowerCase().includes(selectedEmail.company.toLowerCase()) || 
-        selectedEmail.email.includes(l.email)
-      );
+  async function handleSelect(email) {
+    setSelected(email);
+    setReplyText(tab === "pending" ? (email.preview || "") : "");
+    await markRead(email);
+  }
 
-      if (matchedLead) {
-        const leadRes = await fetch(`/api/leads/${matchedLead.id}/status`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status: cat })
-        });
-        if (!leadRes.ok) throw new Error("Failed to update lead status");
-        
-        setLeads(ls => ls.map(l => l.id === matchedLead.id ? { ...l, status: cat } : l));
-        showToast(`Automatically updated ${matchedLead.name}'s status to ${cat.toUpperCase()} in pipeline!`, "success");
+  async function handleReply() {
+    if (!replyText.trim() || !selected) return;
+    if (!settings?.gmailUser) { showToast("Gmail not connected.", "danger"); return; }
+    setReplying(true);
+    try {
+      const toEmail = selected.from_email || selected.email;
+      const res = await fetch("/api/send-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          gmailUser: settings.gmailUser,
+          gmailPass: settings.gmailPass,
+          to: toEmail,
+          subject: selected.subject?.startsWith("Re:") ? selected.subject : `Re: ${selected.subject || ""}`,
+          body: replyText,
+          draftId: tab === "pending" ? selected.id : null,
+        }),
+      });
+      if (res.ok) {
+        showToast("Reply sent! ✓", "success");
+        setReplyText("");
+        // Remove from pending if it was a draft
+        if (tab === "pending") {
+          setEmails(prev => prev.filter(e => e.id !== selected.id));
+          setSelected(null);
+        }
       } else {
-        showToast(`Categorized email as ${cat.toUpperCase()}`, "info");
+        showToast("Failed to send reply.", "danger");
+      }
+    } catch { showToast("Network error.", "danger"); }
+    finally { setReplying(false); }
+  }
+
+  async function handleDiscardDraft() {
+    if (!selected) return;
+    try {
+      await fetch(`/api/emails/${selected.id}`, { method: "DELETE" });
+      setEmails(prev => prev.filter(e => e.id !== selected.id));
+      setSelected(null);
+      showToast("Draft discarded.", "info");
+    } catch { showToast("Failed to discard.", "danger"); }
+  }
+
+  async function handleRegenerateDraft() {
+    if (!selected || regenerating) return;
+    setRegenerating(true);
+    try {
+      const res = await fetch(`/api/emails/${selected.id}/generate-reply`, {
+        method: "POST"
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setReplyText(data.replyText);
+        setEmails(prev => prev.map(e => e.id === selected.id ? { ...e, preview: data.replyText } : e));
+        showToast("Draft reply regenerated! ✨", "success");
+      } else {
+        const err = await res.json().catch(() => ({}));
+        showToast(`Regeneration failed: ${err.error || "Unknown error"}`, "danger");
       }
     } catch (err) {
       console.error(err);
-      showToast("Failed to save email category tagging", "danger");
+      showToast("Network error regenerating draft.", "danger");
+    } finally {
+      setRegenerating(false);
     }
+  }
+
+  async function handleMarkCategory(emailId, cat) {
+    try {
+      await fetch(`/api/emails/${emailId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ category: cat }),
+      });
+      setEmails(prev => prev.map(e => e.id === emailId ? { ...e, category: cat } : e));
+      showToast(`Marked as ${cat}`, "success");
+    } catch { showToast("Failed to update.", "danger"); }
+  }
+
+  function formatTime(ts) {
+    if (!ts) return "";
+    const d = new Date(ts);
+    if (isNaN(d)) return ts; // fallback if it's already a formatted string
+    const now = new Date();
+    const diffMs = now - d;
+    if (diffMs < 60000)   return "Just now";
+    if (diffMs < 3600000) return `${Math.floor(diffMs / 60000)}m ago`;
+    if (diffMs < 86400000) return `${Math.floor(diffMs / 3600000)}h ago`;
+    return d.toLocaleDateString();
+  }
+
+  const catBadge = {
+    interested:     "badge-success",
+    not_interested: "badge-danger",
+    follow_up:      "badge-warning",
+    spam:           "badge-neutral",
   };
 
+  const displayName = (e) => e.from_name || e.from || e.company || "Unknown";
+  const displayEmail = (e) => e.from_email || e.email || "";
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", width: "100%" }}>
-      {/* Horizontal Folders nav visible on <= 1024px */}
-      <div className="inbox-folders-horizontal">
-        {[
-          { id: "all", label: "All Threads", count: emails.length },
-          { id: "unread", label: "Unread", count: emails.filter(e => !e.read && e.category !== "sent").length, color: "var(--color-lime)" },
-          { id: "interested", label: "Leads", count: emails.filter(e => e.category === "interested" || e.labels.includes("hot-lead")).length, color: "var(--color-emerald)" },
-          { id: "not-interested", label: "Not Interested", count: emails.filter(e => e.category === "not-interested").length, color: "var(--text-muted)" },
-          { id: "sent", label: "Sent Outreach", count: emails.filter(e => e.category === "sent" || e.labels.includes("sent")).length, color: "var(--color-indigo)" }
-        ].map((folder) => (
-          <button
-            key={folder.id}
-            onClick={() => { setEmailFilter(folder.id); setSelectedEmail(null); }}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "6px",
-              background: emailFilter === folder.id ? "var(--bg-translucent-strong)" : "transparent",
-              border: "none",
-              color: emailFilter === folder.id ? "var(--color-lime)" : "var(--text-secondary)",
-              fontSize: "12px",
-              fontWeight: emailFilter === folder.id ? 700 : 500,
-              padding: "8px 14px",
-              borderRadius: "8px",
-              cursor: "pointer",
-              whiteSpace: "nowrap"
-            }}
+    <div style={{ display: "flex", height: "calc(100vh - 104px)", gap: 16 }}>
+
+      {/* ── Left panel ── */}
+      <div style={{ width: 320, minWidth: 320, display: "flex", flexDirection: "column", background: "var(--bg-elevated)", borderRadius: "var(--radius-lg)", border: "1px solid var(--border-1)", overflow: "hidden" }}>
+
+        {/* Sync header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--border-1)", background: "var(--bg-card)" }}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: "var(--text-1)" }}>Smart Inbox</span>
+          <button 
+            className="btn btn-ghost btn-sm" 
+            disabled={syncing} 
+            onClick={triggerSync}
+            style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 4, height: 26, padding: "0 8px", cursor: "pointer" }}
           >
-            <span>{folder.label}</span>
-            {folder.count > 0 && (
-              <span className="badge" style={{
-                background: folder.color ? `${folder.color}15` : "var(--bg-translucent-mild)",
-                color: folder.color || "var(--text-muted)",
-                fontSize: "10px",
-                padding: "1px 5px",
-                borderRadius: "3px"
-              }}>{folder.count}</span>
-            )}
+            {syncing ? <><span className="spinner spinner-sm" /> Syncing</> : "🔄 Sync"}
           </button>
-        ))}
-      </div>
-
-      <div className={`inbox-layout ${selectedEmail ? 'show-detail' : 'show-list'}`}>
-        
-        {/* 1. Inbox sidebar folders - visible on desktop */}
-        <div 
-          className="glass-panel inbox-sidebar-vertical" 
-          style={{ 
-            width: sidebarCollapsed ? "0px" : `${sidebarWidth}px`, 
-            display: sidebarCollapsed ? "none" : "flex", 
-            flexDirection: "column", 
-            gap: "16px", 
-            padding: sidebarCollapsed ? "0px" : "16px", 
-            overflow: "hidden" 
-          }}
-        >
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", paddingLeft: "8px" }}>
-            <h3 style={{ fontSize: "16px", fontWeight: 700, color: "var(--text-primary)" }}>Inbox</h3>
-            <button 
-              onClick={() => setSidebarCollapsed(true)} 
-              style={{
-                background: "transparent",
-                border: "none",
-                color: "var(--text-muted)",
-                cursor: "pointer",
-                fontSize: "12px",
-                padding: "4px"
-              }}
-              title="Collapse Folders"
-            >
-              ◀
-            </button>
-          </div>
-          
-          <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-            {[
-              { id: "all", label: "All Threads", count: emails.length },
-              { id: "unread", label: "Unread Replies", count: emails.filter(e => !e.read && e.category !== "sent").length, color: "var(--color-lime)" },
-              { id: "interested", label: "Interested / Leads", count: emails.filter(e => e.category === "interested" || e.labels.includes("hot-lead")).length, color: "var(--color-emerald)" },
-              { id: "not-interested", label: "Not Interested", count: emails.filter(e => e.category === "not-interested").length, color: "var(--text-muted)" },
-              { id: "sent", label: "Sent Outreach", count: emails.filter(e => e.category === "sent" || e.labels.includes("sent")).length, color: "var(--color-indigo)" }
-            ].map((folder) => (
-              <button
-                key={folder.id}
-                onClick={() => { setEmailFilter(folder.id); setSelectedEmail(null); }}
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  background: emailFilter === folder.id ? "var(--bg-translucent-mild)" : "transparent",
-                  border: "none",
-                  color: emailFilter === folder.id ? "var(--color-lime)" : "var(--text-secondary)",
-                  fontSize: "13px",
-                  fontWeight: emailFilter === folder.id ? 700 : 500,
-                  padding: "10px 12px",
-                  borderRadius: "8px",
-                  cursor: "pointer",
-                  textAlign: "left",
-                  transition: "all 0.2s"
-                }}
-              >
-                <span>{folder.label}</span>
-                {folder.count > 0 && (
-                  <span 
-                    className="badge" 
-                    style={{ 
-                      background: folder.color ? `${folder.color}15` : "var(--bg-translucent-mild)", 
-                      color: folder.color || "var(--text-muted)",
-                      padding: "2px 6px",
-                      borderRadius: "4px"
-                    }}
-                  >
-                    {folder.count}
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
         </div>
 
-        {!sidebarCollapsed && (
-          <div 
-            onMouseDown={startResizeSidebar}
-            className="inbox-resizer"
-            style={{
-              width: "4px",
-              cursor: "col-resize",
-              background: "var(--bg-translucent-mild)",
-              transition: "background 0.2s",
-              alignSelf: "stretch",
-              zIndex: 10,
-              margin: "0 -2px",
-              position: "relative"
-            }}
-            onMouseEnter={(e) => e.target.style.background = "var(--color-lime)"}
-            onMouseLeave={(e) => e.target.style.background = "var(--bg-translucent-mild)"}
-          />
-        )}
-
-        {/* 2. Middle Pane: Email Thread List */}
-        <div className="glass-panel inbox-list-pane" style={{ width: `${threadWidth}px`, display: "flex", flexDirection: "column", padding: 0, overflow: "hidden" }}>
-          <div style={{ padding: "16px 20px", borderBottom: "1px solid rgba(255,255,255,0.05)", display: "flex", alignItems: "center", gap: "12px" }}>
-            {sidebarCollapsed && (
-              <button 
-                onClick={() => setSidebarCollapsed(false)}
-                className="btn btn-outline btn-sm"
-                style={{
-                  padding: "4px 8px",
-                  fontSize: "11px",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "4px"
-                }}
-              >
-                ▶ Folders
-              </button>
-            )}
-            <h4 style={{ fontSize: "14px", fontWeight: 700, color: "var(--text-primary)", flex: 1 }}>Outreach Responses</h4>
+        {/* Tabs */}
+        <div style={{ display: "flex", borderBottom: "1px solid var(--border-1)" }}>
+          {TABS.map(t => (
             <button
-              onClick={syncMailbox}
-              disabled={syncing}
-              className="btn btn-outline btn-sm"
+              key={t.id}
+              onClick={() => { setTab(t.id); setSelected(null); setOpenFilter("all"); }}
               style={{
-                padding: "4px 8px",
-                fontSize: "11px",
-                display: "flex",
-                alignItems: "center",
-                gap: "4px"
+                flex: 1, padding: "10px 4px", fontSize: 11.5, fontWeight: tab === t.id ? 700 : 500,
+                background: tab === t.id ? "var(--brand-subtle)" : "transparent",
+                color: tab === t.id ? "var(--brand)" : "var(--text-3)",
+                border: "none", borderBottom: tab === t.id ? "2px solid var(--brand)" : "2px solid transparent",
+                cursor: "pointer", transition: "all 0.15s", position: "relative",
               }}
             >
-              {syncing ? "Syncing..." : "🔄 Sync Inbox"}
+              {t.label}
+              {t.id === "inbox" && unreadCount > 0 && (
+                <span className="badge badge-brand" style={{ position: "absolute", top: 4, right: 4, fontSize: 9, padding: "1px 5px" }}>{unreadCount}</span>
+              )}
+              {t.id === "pending" && pendingCount > 0 && (
+                <span className="badge badge-warning" style={{ position: "absolute", top: 4, right: 4, fontSize: 9, padding: "1px 5px" }}>{pendingCount}</span>
+              )}
             </button>
-          </div>
-          
-          <div style={{ overflowY: "auto", flex: 1 }}>
-            {filteredEmails.map((email) => {
-              const isSelected = selectedEmail?.id === email.id;
-              const matchedLead = leads.find(l => l.email && l.email.toLowerCase() === email.email?.toLowerCase());
-              return (
-                <div
-                  key={email.id}
-                  onClick={async () => {
-                    setSelectedEmail(email);
-                    if (!email.read) {
-                      try {
-                        const response = await fetch(`/api/emails/${email.id}`, {
-                          method: "PUT",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ is_read: true })
-                        });
-                        if (response.ok) {
-                          setEmails(es => es.map(e => e.id === email.id ? { ...e, read: true } : e));
-                        }
-                      } catch (err) {
-                        console.error("Failed to mark email as read on server:", err);
-                      }
-                    }
-                  }}
-                  style={{
-                    padding: "16px 20px",
-                    borderBottom: "1px solid rgba(255,255,255,0.03)",
-                    cursor: "pointer",
-                    background: isSelected ? "rgba(99, 102, 241, 0.05)" : email.read ? "transparent" : "rgba(200, 255, 0, 0.01)",
-                    borderLeft: isSelected ? "4px solid var(--color-lime)" : "4px solid transparent",
-                    transition: "background 0.2s"
-                  }}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
-                    <span style={{ fontSize: "13px", fontWeight: email.read ? 600 : 800, color: email.read ? "var(--text-secondary)" : "var(--text-primary)" }}>
-                      {email.from}
-                    </span>
-                    <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>{email.time}</span>
-                  </div>
-                  
-                  <div style={{ fontSize: "12px", fontWeight: email.read ? 500 : 700, color: email.read ? "var(--text-secondary)" : "var(--color-lime)", marginBottom: "4px" }}>
-                    {email.subject}
-                  </div>
-                  
-                  <div style={{ fontSize: "11px", color: "var(--text-muted)", lineClamp: 2, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
-                    {email.preview}
-                  </div>
-
-                  <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginTop: "8px" }}>
-                    {email.labels.map(l => (
-                      <span 
-                        key={l}
-                        className="badge" 
-                        style={{ 
-                          fontSize: "9px", 
-                          backgroundColor: getLabelStyle(l).bg, 
-                          color: getLabelStyle(l).text, 
-                          border: `1px solid ${getLabelStyle(l).border}`,
-                          padding: "1px 6px"
-                        }}
-                      >
-                        {l}
-                      </span>
-                    ))}
-                    {matchedLead && (
-                      <span 
-                        className="badge" 
-                        style={{ 
-                          fontSize: "9px", 
-                          backgroundColor: matchedLead.is_opened ? "rgba(16, 185, 129, 0.12)" : "var(--bg-translucent-mild)", 
-                          color: matchedLead.is_opened ? "var(--color-emerald)" : "var(--text-muted)", 
-                          border: matchedLead.is_opened ? "1px solid rgba(16, 185, 129, 0.2)" : "1px solid var(--border-translucent)",
-                          padding: "1px 6px",
-                          fontWeight: matchedLead.is_opened ? 700 : 500
-                        }}
-                      >
-                        {matchedLead.is_opened ? "✉️ Opened" : "✉️ Not Opened"}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-            {filteredEmails.length === 0 && (
-              <div style={{ color: "var(--text-muted)", fontSize: "13px", textAlign: "center", padding: "40px 20px" }}>
-                No messages found under this filter.
-              </div>
-            )}
-          </div>
+          ))}
         </div>
 
-        <div 
-          onMouseDown={startResizeThread}
-          className="inbox-resizer"
-          style={{
-            width: "4px",
-            cursor: "col-resize",
-            background: "var(--bg-translucent-mild)",
-            transition: "background 0.2s",
-            alignSelf: "stretch",
-            zIndex: 10,
-            margin: "0 -2px",
-            position: "relative"
-          }}
-          onMouseEnter={(e) => e.target.style.background = "var(--color-lime)"}
-          onMouseLeave={(e) => e.target.style.background = "var(--bg-translucent-mild)"}
-        />
-
-        {/* 3. Right Pane: Reading Thread & Composer */}
-        <div className="glass-panel inbox-detail-pane" style={{ flex: 1, display: "flex", flexDirection: "column", padding: 0, overflow: "hidden" }}>
-          {selectedEmail ? (
-            <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-              
-              {/* Header info */}
-              <div style={{ padding: "20px 24px", borderBottom: "1px solid rgba(255,255,255,0.05)", display: "flex", flexDirection: "column", gap: "12px" }}>
-                <button 
-                  onClick={() => setSelectedEmail(null)}
-                  className="btn btn-outline btn-sm mobile-back-btn"
-                  style={{ display: "none", alignItems: "center", gap: "6px", alignSelf: "flex-start" }}
-                >
-                  ← Back to List
-                </button>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                  <div>
-                    <h3 style={{ fontSize: "17px", fontWeight: 800, color: "var(--text-primary)", letterSpacing: "-0.01em" }}>{selectedEmail.subject}</h3>
-                    <div style={{ display: "flex", gap: "12px", alignItems: "center", marginTop: "6px", flexWrap: "wrap" }}>
-                      <span style={{ fontSize: "13px", color: "var(--text-secondary)" }}>
-                        From: <strong style={{ color: "var(--text-primary)" }}>{selectedEmail.from}</strong> ({selectedEmail.email})
-                      </span>
-                      <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>·</span>
-                      <span style={{ fontSize: "13px", color: "var(--text-secondary)" }}>
-                        Company: <strong style={{ color: "var(--color-lime)" }}>{selectedEmail.company}</strong>
-                      </span>
-                      {(() => {
-                        const matchedLead = leads.find(l => 
-                          (selectedEmail.email && l.email && selectedEmail.email.includes(l.email)) ||
-                          (selectedEmail.company && l.name && l.name.toLowerCase().includes(selectedEmail.company.toLowerCase()))
-                        );
-                        if (!matchedLead) return null;
-                        return (
-                          <>
-                            <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>·</span>
-                            <span className="badge" style={{ 
-                              fontSize: "10px", 
-                              backgroundColor: matchedLead.is_opened ? "rgba(16, 185, 129, 0.12)" : "var(--bg-translucent-mild)", 
-                              color: matchedLead.is_opened ? "var(--color-emerald)" : "var(--text-muted)", 
-                              border: matchedLead.is_opened ? "1px solid rgba(16, 185, 129, 0.2)" : "1px solid var(--border-translucent)",
-                              padding: "2px 8px",
-                              fontWeight: matchedLead.is_opened ? 700 : 500
-                            }}>
-                              {matchedLead.is_opened ? "✉️ Opened" : "✉️ Not Opened"}
-                            </span>
-                          </>
-                        );
-                      })()}
-                    </div>
-                  </div>
-                  <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>{selectedEmail.time}</span>
-                </div>
-              </div>
-
-              {/* Content pane */}
-              <div style={{ flex: 1, padding: "24px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "24px" }}>
-                
-                {/* Customer message bubble */}
-                <div style={{ background: "var(--bg-translucent-subtle)", border: "var(--border-subtle)", borderRadius: "12px", padding: "20px", position: "relative" }}>
-                  <p style={{ fontSize: "14px", color: "var(--text-primary)", lineHeight: "1.7", whiteSpace: "pre-line" }}>
-                    {selectedEmail.preview}
-                  </p>
-                </div>
-
-                {/* AI Autopilot control panel */}
-                {(() => {
-                  const matchedLead = leads.find(l => 
-                    (selectedEmail.company && l.name && l.name.toLowerCase().includes(selectedEmail.company.toLowerCase())) || 
-                    (selectedEmail.email && l.email && selectedEmail.email.includes(l.email))
-                  );
-                  if (!matchedLead) return null;
-                  return (
-                    <div style={{ 
-                      display: "flex", 
-                      justifyContent: "space-between", 
-                      alignItems: "center", 
-                      padding: "12px 18px", 
-                      background: "var(--bg-translucent-subtle)", 
-                      borderRadius: "10px", 
-                      border: "var(--border-subtle)", 
-                      marginTop: "-12px",
-                      animation: "fadeIn 0.2s" 
-                    }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                        <span style={{ fontSize: "18px" }}>🤖</span>
-                        <div>
-                          <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--text-primary)" }}>AI Autopilot Responder</div>
-                          <div style={{ fontSize: "11px", color: "var(--text-secondary)" }}>Auto-reply to incoming emails for this lead</div>
-                        </div>
-                      </div>
-                      <button 
-                        className={`btn btn-sm ${matchedLead.ai_enabled ? "btn-lime" : "btn-outline"}`}
-                        onClick={async () => {
-                          try {
-                            const res = await fetch(`/api/leads/${matchedLead.id}/toggle-ai`, {
-                              method: "PUT",
-                              headers: { "Content-Type": "application/json" },
-                              body: JSON.stringify({ ai_enabled: !matchedLead.ai_enabled })
-                            });
-                            if (!res.ok) throw new Error();
-                            const updated = await res.json();
-                            setLeads(ls => ls.map(l => l.id === matchedLead.id ? { ...l, ai_enabled: updated.ai_enabled } : l));
-                            showToast(`AI Autopilot ${updated.ai_enabled ? 'enabled' : 'disabled'} for ${matchedLead.name}`, "success");
-                          } catch (e) {
-                            showToast("Failed to toggle AI Autopilot status", "danger");
-                          }
-                        }}
-                      >
-                        {matchedLead.ai_enabled ? "Active" : "Paused"}
-                      </button>
-                    </div>
-                  );
-                })()}
-
-                {/* Categorize actions */}
-                <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-                  <span style={{ fontSize: "12px", color: "var(--text-muted)", fontWeight: 700, textTransform: "uppercase" }}>Tag & Promote:</span>
-                  <button className="btn btn-outline btn-sm" onClick={() => tagEmailCategory("interested")} style={{ borderColor: "rgba(16, 185, 129, 0.4)", color: "var(--color-emerald)" }}>
-                    Interested 🎯
-                  </button>
-                  <button className="btn btn-outline btn-sm" onClick={() => tagEmailCategory("follow-up")} style={{ borderColor: "rgba(245, 158, 11, 0.4)", color: "var(--color-amber)" }}>
-                    Follow Up ⏳
-                  </button>
-                  <button className="btn btn-outline btn-sm" onClick={() => tagEmailCategory("not-interested")} style={{ borderColor: "rgba(239, 68, 68, 0.4)", color: "var(--color-crimson)" }}>
-                    Not Interested
-                  </button>
-                </div>
-
-                {/* AI Reply generator & composer */}
-                <div className="glass-panel" style={{ padding: "16px", background: "rgba(99, 102, 241, 0.02)", borderColor: "rgba(99, 102, 241, 0.15)" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
-                    <h4 style={{ fontSize: "13px", fontWeight: 700, color: "var(--text-primary)" }}>Draft Smart Reply</h4>
-                    
-                    <button 
-                      className="btn btn-indigo btn-sm" 
-                      onClick={() => {
-                        if (selectedEmail.category === "not-interested") {
-                          showToast("AI Smart Reply is disabled for 'Not Interested' leads.", "warn");
-                          return;
-                        }
-                        generateSmartReply(selectedEmail);
-                      }}
-                      disabled={aiLoading || selectedEmail.category === "not-interested"}
-                    >
-                      {aiLoading ? "✨ Gemini composing..." : "✨ Gemini Smart Reply"}
-                    </button>
-                  </div>
-
-                  <textarea
-                    className="input-field"
-                    style={{ minHeight: "130px", fontFamily: "var(--font-sans)", lineHeight: "1.6", background: "#060608" }}
-                    placeholder="Enter your reply draft here or use Gemini Smart Reply to brainstorm details..."
-                    value={replyText}
-                    onChange={(e) => setReplyText(e.target.value)}
-                  />
-
-                  {replyText && (
-                    <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end", marginTop: "12px", animation: "fadeIn 0.2s" }}>
-                      <button className="btn btn-outline btn-sm" onClick={() => setReplyText("")}>Discard</button>
-                      <button className="btn btn-lime btn-sm" onClick={sendEmailReply}>📧 Send SMTP Reply</button>
-                    </div>
-                  )}
-                </div>
-
-              </div>
-
+        {/* Search & Filters */}
+        <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--border-1)", display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8 }}>
+            <div className="search-bar" style={{ flex: 1 }}>
+              <span className="search-icon">⌕</span>
+              <input placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} />
             </div>
-          ) : (
-            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)", fontSize: "14px", flexDirection: "column", gap: "8px" }}>
-              <span style={{ fontSize: "28px" }}>📧</span>
-              Select an outreach response thread from the list to reply
+            {tab !== "pending" && (
+              <select
+                className="input"
+                style={{ width: 110, padding: "0 8px", fontSize: 11.5, height: "auto", background: "var(--bg-surface)", border: "1px solid var(--border-1)" }}
+                value={openFilter}
+                onChange={e => setOpenFilter(e.target.value)}
+              >
+                <option value="all">All</option>
+                <option value="opened">{tab === "sent" ? "👁 Opened" : "✓ Read"}</option>
+                <option value="unopened">{tab === "sent" ? "✉ Unopened" : "✉ Unread"}</option>
+              </select>
+            )}
+          </div>
+          {(tab === "inbox" || tab === "sent") && emails.length > 0 && (
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <button 
+                onClick={handleClearInbox}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: "var(--danger)",
+                  fontSize: 10.5,
+                  cursor: "pointer",
+                  padding: "2px 6px",
+                  borderRadius: 4,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 4
+                }}
+                className="btn-ghost"
+              >
+                🗑 Clear Inbox
+              </button>
             </div>
           )}
         </div>
 
+        {/* Pending banner */}
+        {tab === "pending" && pendingCount > 0 && (
+          <div style={{ padding: "8px 12px", background: "rgba(234,179,8,0.12)", borderBottom: "1px solid rgba(234,179,8,0.25)", fontSize: 11.5, color: "#ca8a04", lineHeight: 1.5 }}>
+            ⚠ AI draft replies — review and click <strong>Send</strong> to approve. Nothing is sent automatically.
+          </div>
+        )}
+
+        {/* Email list */}
+        <div style={{ flex: 1, overflow: "auto" }}>
+          {filtered.length === 0 ? (
+            <div className="empty-state" style={{ padding: 32 }}>
+              <div className="empty-state-icon">✉</div>
+              <div className="empty-state-title">
+                {tab === "inbox"   ? "No replies yet"      :
+                 tab === "pending" ? "No pending drafts"   : "No sent emails"}
+              </div>
+              <div className="empty-state-desc">
+                {tab === "inbox"   ? "Replies from leads will appear here when they respond." :
+                 tab === "pending" ? "AI draft suggestions will appear here for your approval." :
+                 "Emails you send will appear here."}
+              </div>
+            </div>
+          ) : (
+            filtered.map(email => {
+              const isUnread = !email.is_read && !email.read;
+              const isPending = email.labels?.includes("pending_reply") || email.category === "draft";
+              return (
+                <div
+                  key={email.id}
+                  onClick={() => handleSelect(email)}
+                  style={{
+                    padding: "12px 16px",
+                    borderBottom: "1px solid var(--border-2)",
+                    cursor: "pointer",
+                    background: selected?.id === email.id
+                      ? "var(--brand-subtle)"
+                      : isUnread ? "var(--bg-overlay)" : "transparent",
+                    transition: "background 0.1s",
+                    borderLeft: isPending ? "3px solid #eab308" : isUnread ? "3px solid var(--brand)" : "3px solid transparent",
+                  }}
+                >
+                  <div className="flex-between" style={{ marginBottom: 3 }}>
+                    <div style={{ fontWeight: isUnread ? 700 : 500, fontSize: 13, color: "var(--text-1)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {displayName(email)}
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--text-4)", flexShrink: 0, marginLeft: 8 }}>
+                      {formatTime(email.time_received || email.time)}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 12.5, color: "var(--text-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {email.subject || "(no subject)"}
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--text-4)", marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {email.preview || ""}
+                  </div>
+                  {isPending && (
+                    <div style={{ marginTop: 5 }}>
+                      <span style={{ fontSize: 10, background: "rgba(234,179,8,0.2)", color: "#ca8a04", padding: "2px 6px", borderRadius: 4, fontWeight: 600 }}>DRAFT · Needs Approval</span>
+                    </div>
+                  )}
+                  {email.category && !isPending && (
+                    <div style={{ marginTop: 6 }}>
+                      <span className={`badge ${catBadge[email.category] || "badge-neutral"}`} style={{ fontSize: 10 }}>
+                        {email.category?.replace("_", " ")}
+                      </span>
+                    </div>
+                  )}
+                  {tab === "sent" && (
+                    <div style={{ marginTop: 6 }}>
+                      {email.lead_is_opened ? (
+                        <span className="badge badge-success" style={{ fontSize: 10 }}>
+                          👁 Opened
+                        </span>
+                      ) : (
+                        <span className="badge badge-neutral" style={{ fontSize: 10 }}>
+                          ✉ Sent (Unopened)
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+
+      {/* ── Right panel ── */}
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", background: "var(--bg-elevated)", borderRadius: "var(--radius-lg)", border: "1px solid var(--border-1)", overflow: "hidden" }}>
+        {!selected ? (
+          <div className="empty-state" style={{ height: "100%" }}>
+            <div className="empty-state-icon">✉</div>
+            <div className="empty-state-title">Select an email</div>
+            <div className="empty-state-desc">
+              {tab === "pending"
+                ? "Select a draft to review the AI suggestion and send it yourself."
+                : "Click an email to read it and reply."}
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Email header */}
+            <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--border-1)" }}>
+              <div style={{ fontWeight: 700, fontSize: 16, color: "var(--text-1)", marginBottom: 6 }}>
+                {selected.subject || "(no subject)"}
+              </div>
+              <div className="flex-between">
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <div style={{ width: 32, height: 32, borderRadius: "50%", background: "var(--brand-subtle)", border: "1px solid var(--brand)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, color: "var(--brand)" }}>
+                    {displayName(selected)[0]?.toUpperCase()}
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>{displayName(selected)}</div>
+                    <div style={{ fontSize: 11.5, color: "var(--text-3)", display: "flex", alignItems: "center", gap: 6 }}>
+                      {displayEmail(selected)}
+                      {tab === "sent" && (
+                        selected.lead_is_opened ? (
+                          <span className="badge badge-success" style={{ fontSize: 10, padding: "1px 5px", display: "inline-flex", alignItems: "center", gap: 3 }}>
+                            👁 Opened
+                          </span>
+                        ) : (
+                          <span className="badge badge-neutral" style={{ fontSize: 10, padding: "1px 5px", display: "inline-flex", alignItems: "center", gap: 3 }}>
+                            ✉ Sent (Unopened)
+                          </span>
+                        )
+                      )}
+                    </div>
+                  </div>
+                </div>
+                {/* Only show category picker for inbox emails */}
+                {tab === "inbox" && (
+                  <select
+                    className="input input-sm"
+                    style={{ width: 160 }}
+                    value={selected.category || ""}
+                    onChange={e => { handleMarkCategory(selected.id, e.target.value); setSelected(prev => ({ ...prev, category: e.target.value })); }}
+                  >
+                    <option value="">— Categorize —</option>
+                    <option value="interested">Interested</option>
+                    <option value="follow_up">Follow Up</option>
+                    <option value="not_interested">Not Interested</option>
+                    <option value="spam">Spam</option>
+                  </select>
+                )}
+              </div>
+            </div>
+
+            {/* Pending approval banner */}
+            {(selected.labels?.includes("pending_reply") || selected.category === "draft") && (
+              <div style={{ padding: "10px 20px", background: "rgba(234,179,8,0.1)", borderBottom: "1px solid rgba(234,179,8,0.2)", fontSize: 13, color: "#92400e", display: "flex", alignItems: "center", gap: 8 }}>
+                <span>⚠</span>
+                <span>This is an <strong>AI draft reply</strong>. Edit it below and click <strong>Send Reply</strong> to send it. Or click <strong>Discard</strong> to delete it.</span>
+              </div>
+            )}
+
+            {/* Email body */}
+            <div style={{ flex: 1, overflow: "auto", padding: 20 }}>
+              <div style={{ fontSize: 14, lineHeight: 1.8, color: "var(--text-2)", whiteSpace: "pre-wrap", fontFamily: "var(--font)" }}>
+                {tab === "sent"
+                  ? (selected.preview || "Email content not available.")
+                  : (tab === "pending"
+                    ? null  // body shown in textarea below for editing
+                    : (selected.preview || "Email content not available.")
+                  )
+                }
+              </div>
+            </div>
+
+            {/* Reply / send box — hidden for sent tab */}
+            {tab !== "sent" && (
+              <div style={{ padding: "14px 20px", borderTop: "1px solid var(--border-1)" }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-3)", marginBottom: 8 }}>
+                  {tab === "pending" ? `✏ Edit draft reply to ${displayEmail(selected)}` : `Reply to ${displayEmail(selected)}`}
+                </div>
+                <textarea
+                  className="input"
+                  rows={tab === "pending" ? 6 : 4}
+                  value={replyText}
+                  onChange={e => setReplyText(e.target.value)}
+                  placeholder={tab === "pending" ? "Edit the AI draft before sending..." : "Type your reply..."}
+                  style={{ fontFamily: "var(--font)", lineHeight: 1.6 }}
+                />
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
+                  {tab === "pending" && (
+                    <>
+                      <button 
+                        className="btn btn-secondary" 
+                        onClick={handleRegenerateDraft} 
+                        disabled={regenerating}
+                        style={{ display: "flex", alignItems: "center", gap: 4 }}
+                      >
+                        {regenerating ? <><span className="spinner spinner-sm" /> Regenerating</> : "🪄 Regenerate"}
+                      </button>
+                      <button className="btn btn-ghost" onClick={handleDiscardDraft} style={{ color: "var(--danger)" }}>
+                        🗑 Discard
+                      </button>
+                    </>
+                  )}
+                  <button className="btn btn-primary" onClick={handleReply} disabled={replying || !replyText.trim() || regenerating}>
+                    {replying ? <><span className="spinner spinner-sm" /> Sending...</> : "↑ Send Reply"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
+        )}
       </div>
     </div>
   );

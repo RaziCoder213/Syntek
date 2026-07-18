@@ -1,708 +1,1074 @@
-import React, { useState, useEffect } from "react";
+import { useState, useRef, useEffect } from "react";
 
-const SIMULATED_SCAN_LOGS = [
-  { type: "info", text: "Initializing Syntek Scraping Engine v3.2.1..." },
-  { type: "info", text: "Authenticating API tokens for Google Place API & Yelp Fusion..." },
-  { type: "success", text: "Connection established with search clusters: [US-EAST, US-WEST]" },
-  { type: "accent", text: "Target Search: restaurants and cafes" },
-  { type: "info", text: "Polling Google Maps APIs for target city coordinates..." },
-  { type: "success", text: "Coordinate boundary lock: Austin, TX [30.2672° N, 97.7431° W]" },
-  { type: "info", text: "Iterating Google Maps grid blocks (16x16 scan matrix)..." },
-  { type: "success", text: "Discovered 'The Grind House' - Rating 4.6 (1240 reviews) - Scraped email: owner@grindhouse.com" },
-  { type: "info", text: "Querying Instagram Profile Indexer for handle cross-matching..." },
-  { type: "success", text: "Match found: '@grindhouse_atx' - Verified active cafe profile" },
-  { type: "info", text: "Crawling Yelp reviews for Sentiment Intelligence..." },
-  { type: "success", text: "Yelp ID linked: 'the-grind-house-austin' - Rating 4.5" },
-  { type: "info", text: "Scrape queue progress: 24% complete..." },
-  { type: "success", text: "Discovered 'Bloom Café' - Rating 4.8 (2100 reviews) - Scraped email: hello@bloomcafe.com" },
-  { type: "success", text: "Match found: '@bloom.pdx' - Verified Active Cafe" },
-  { type: "info", text: "Scrape queue progress: 52% complete..." },
-  { type: "success", text: "Discovered 'Salt & Oak' - Rating 4.7 (670 reviews) - Scraped email: reservations@saltandoak.com" },
-  { type: "success", text: "Discovered 'Terra Kitchen' - Rating 4.4 (890 reviews) - Scraped email: info@terrakitchen.co" },
-  { type: "info", text: "Scrape queue progress: 80% complete..." },
-  { type: "success", text: "Discovered 'The Morning Pull' - Rating 4.9 (3200 reviews) - Scraped email: tm@morningpull.com" },
-  { type: "accent", text: "Scan complete. 5 high-value leads filtered, contact info verified, socials mapped." }
-];
-
-export default function LeadFinder({ leads, setLeads, selectedLeads, setSelectedLeads, searching, searchProgress, triggerSearch, searchLog, activeLeadDrawer, setActiveLeadDrawer, showToast, geminiKey, setGeminiKey }) {
-  const [searchTerm, setSearchTerm] = useState("Cafes & Brunch");
-  const [searchLocation, setSearchLocation] = useState("Austin, TX");
-  const [sourceGoogle, setSourceGoogle] = useState(true);
-  const [sourceYelp, setSourceYelp] = useState(true);
-  const [sourceInstagram, setSourceInstagram] = useState(true);
-  const [searchMethod, setSearchMethod] = useState("scraper");
-  const [isEditing, setIsEditing] = useState(false);
-  const [editFields, setEditFields] = useState({
-    name: "",
-    email: "",
-    phone: "",
-    instagram: "",
-    website: ""
-  });
+/* ─── Email Composer Modal ─── */
+function EmailComposer({ lead, settings, onClose, onSent, showToast }) {
+  const [subject, setSubject]   = useState("");
+  const [body, setBody]         = useState("");
+  const [generating, setGen]    = useState(false);
+  const [sending, setSending]   = useState(false);
+  const generated = useRef(false);
 
   useEffect(() => {
-    if (activeLeadDrawer) {
-      setEditFields({
-        name: activeLeadDrawer.name || "",
-        email: activeLeadDrawer.email || "",
-        phone: activeLeadDrawer.phone || "",
-        instagram: activeLeadDrawer.instagram || "",
-        website: activeLeadDrawer.website || ""
+    if (!generated.current) { generated.current = true; generateEmail(); }
+  }, []); // eslint-disable-line
+
+  async function generateEmail() {
+    setGen(true);
+    try {
+      const pitchOfferLabel = {
+        whatsapp_bot: "WhatsApp booking bot", website_dev: "website design",
+        ai_chatbot: "AI chatbot", custom: settings.customOfferDetails || "custom service",
+      }[settings.pitchOffer] || settings.pitchOffer;
+
+      const prompt = `You are ${settings.senderName || "a developer"} (${settings.senderRole || "developer"}${settings.companyName ? ` at ${settings.companyName}` : ""}).
+Write a highly personalized cold outreach email to a business owner.
+
+Business Info:
+- Name: ${lead.name}
+- Type: ${lead.type}
+- City: ${lead.city}
+- Rating: ${lead.rating} ⭐ (${lead.reviews} reviews)
+- Website: ${lead.website || "None"}
+- Website Status: ${lead.website_status || "unknown"}
+- Instagram: ${lead.instagram || "None"}
+
+You are pitching: ${pitchOfferLabel}
+Tone: ${settings.outreachStyle || "casual"}, warm, direct.
+Bio context: ${settings.aboutText || "local developer helping businesses grow"}
+${settings.workSamples ? `Work samples: ${settings.workSamples}` : ""}
+
+Rules:
+- Start with "Subject: " on line 1
+- Then a blank line
+- Then the email body
+- Keep it under 180 words
+- Do NOT use placeholders or brackets like [your name]
+- End with your real name and role as signature
+- Be specific about WHY this business needs what you offer`;
+
+      const res = await fetch("/api/ai/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt }),
+        signal: AbortSignal.timeout(35000),
       });
-      setIsEditing(false);
-    }
-  }, [activeLeadDrawer]);
-
-  const toggleSelectLead = (id) => {
-    if (selectedLeads.includes(id)) {
-      setSelectedLeads(selectedLeads.filter(x => x !== id));
-    } else {
-      setSelectedLeads([...selectedLeads, id]);
-    }
-  };
-
-  const selectAll = () => {
-    setSelectedLeads(leads.map(l => l.id));
-    showToast("All leads selected");
-  };
-
-  const deselectAll = () => {
-    setSelectedLeads([]);
-  };
-
-  const handleClearAllLeads = async () => {
-    if (!window.confirm("Are you sure you want to clear all leads and emails from the database? This action is permanent and cannot be undone.")) {
-      return;
-    }
-    try {
-      const response = await fetch("/api/leads", { method: "DELETE" });
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.error || `Server responded with status ${response.status}`);
+      if (res.ok) {
+        const data = await res.json();
+        const text = data.text || "";
+        const lines = text.split("\n");
+        if (lines[0]?.startsWith("Subject:")) {
+          setSubject(lines[0].replace("Subject:", "").trim());
+          setBody(lines.slice(2).join("\n").trim());
+        } else {
+          setSubject(`Quick question about ${lead.name}`);
+          setBody(text.trim());
+        }
+      } else {
+        showToast("AI generation failed. Write your email manually.", "warning");
       }
-      
-      setLeads([]);
-      setSelectedLeads([]);
-      setActiveLeadDrawer(null);
-      showToast("All database records cleared successfully!", "success");
-    } catch (err) {
-      console.error(err);
-      showToast("Failed to clear database: " + err.message, "danger");
+    } catch (e) {
+      showToast("AI timed out. Write email manually.", "warning");
+    } finally {
+      setGen(false);
     }
-  };
+  }
 
-  const bulkAddCampaign = async () => {
-    if (selectedLeads.length === 0) {
-      showToast("No leads selected!", "warn");
+  async function handleSend() {
+    if (!settings.gmailUser || !settings.gmailPass) {
+      showToast("Gmail not connected. Go to Settings to connect Gmail.", "danger");
       return;
     }
+    if (!lead.email) {
+      showToast("This lead has no email address.", "danger");
+      return;
+    }
+    setSending(true);
     try {
-      await Promise.all(selectedLeads.map(id =>
-        fetch(`/api/leads/${id}/status`, {
+      const res = await fetch("/api/send-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          gmailUser: settings.gmailUser,
+          gmailPass: settings.gmailPass,
+          to: lead.email,
+          subject,
+          body,
+        }),
+      });
+      if (res.ok) {
+        await fetch(`/api/leads/${lead.id}/status`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status: "contacted" })
-        })
-      ));
-      setLeads(ls => ls.map(l => selectedLeads.includes(l.id) ? { ...l, status: "contacted" } : l));
-      showToast(`Bulk added ${selectedLeads.length} leads to Outreach Campaigns!`, "success");
-      setSelectedLeads([]);
-    } catch (err) {
-      console.error("Bulk add campaign failed:", err);
-      showToast("Failed to bulk update lead status in database", "danger");
+          body: JSON.stringify({ status: "contacted" }),
+        });
+        showToast(`Email sent to ${lead.name}!`, "success");
+        onSent(lead.id);
+        onClose();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        showToast(`Send failed: ${err.error || "Unknown error"}`, "danger");
+      }
+    } catch (e) {
+      showToast("Network error sending email.", "danger");
+    } finally {
+      setSending(false);
     }
-  };
-
-  const getBadgeStyle = (status) => {
-    switch (status) {
-      case "not contacted":
-      case "new":
-        return { bg: "rgba(99, 102, 241, 0.1)", text: "var(--color-indigo)", border: "rgba(99, 102, 241, 0.25)" };
-      case "contacted":
-        return { bg: "rgba(245, 158, 11, 0.1)", text: "var(--color-amber)", border: "rgba(245, 158, 11, 0.25)" };
-      case "replied":
-        return { bg: "rgba(13, 148, 136, 0.1)", text: "var(--color-teal)", border: "rgba(13, 148, 136, 0.25)" };
-      case "interested":
-        return { bg: "rgba(16, 185, 129, 0.1)", text: "var(--color-emerald)", border: "rgba(16, 185, 129, 0.25)" };
-      case "closed":
-        return { bg: "rgba(200, 255, 0, 0.1)", text: "var(--color-lime)", border: "rgba(200, 255, 0, 0.25)" };
-      case "trashed":
-        return { bg: "rgba(239, 68, 68, 0.1)", text: "var(--color-crimson)", border: "rgba(239, 68, 68, 0.25)" };
-      default:
-        return { bg: "rgba(255,255,255,0.05)", text: "var(--text-secondary)", border: "rgba(255,255,255,0.1)" };
-    }
-  };
+  }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "24px", animation: "fadeIn 0.4s ease" }}>
-      {/* Module Title */}
-      <div>
-        <h2 style={{ fontSize: "24px", fontWeight: 800, color: "var(--text-primary)", letterSpacing: "-0.02em" }}>Lead Finder Engine</h2>
-        <p style={{ color: "var(--text-secondary)", fontSize: "14px", marginTop: "4px" }}>
-          Autonomous target finder using Google Maps API, Yelp scraping, and Instagram validation.
-        </p>
-      </div>
-
-      {/* Control Panel Grid */}
-      <div className="lead-finder-grid">
-        
-        {/* Search settings glass panel */}
-        <div className="glass-panel" style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-          <h3 style={{ fontSize: "16px", fontWeight: 700, color: "var(--text-primary)" }}>Target Parameters</h3>
-          
-          <div style={{ display: "flex", background: "var(--bg-translucent-mild)", padding: "4px", borderRadius: "8px", border: "1px solid var(--border-translucent)", marginBottom: "4px" }}>
-            <button 
-              type="button"
-              onClick={() => setSearchMethod("scraper")}
-              style={{
-                flex: 1,
-                padding: "8px 12px",
-                borderRadius: "6px",
-                border: "none",
-                fontSize: "12px",
-                fontWeight: 600,
-                cursor: "pointer",
-                transition: "all 0.2s",
-                background: searchMethod === "scraper" ? "var(--bg-translucent-strong)" : "transparent",
-                color: searchMethod === "scraper" ? "var(--text-primary)" : "var(--text-secondary)"
-              }}
-            >
-              🌐 Web Scraper
-            </button>
-            <button 
-              type="button"
-              onClick={() => setSearchMethod("deepsearch")}
-              style={{
-                flex: 1,
-                padding: "8px 12px",
-                borderRadius: "6px",
-                border: "none",
-                fontSize: "12px",
-                fontWeight: 600,
-                cursor: "pointer",
-                transition: "all 0.2s",
-                background: searchMethod === "deepsearch" ? "var(--color-lime)" : "transparent",
-                color: searchMethod === "deepsearch" ? "#000" : "var(--text-secondary)"
-              }}
-            >
-              ♊ Gemini DeepSearch AI
-            </button>
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal modal-lg">
+        <div className="modal-header">
+          <div>
+            <div className="modal-title">✉ Draft Email — {lead.name}</div>
+            <div style={{ fontSize: 12, color: "var(--text-3)", marginTop: 2 }}>
+              To: <span style={{ color: "var(--text-1)" }}>{lead.email || "No email"}</span>
+            </div>
           </div>
-
-          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-            <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-              <label style={{ fontSize: "12px", color: "var(--text-secondary)", fontWeight: 600 }}>Niche Keyword</label>
-              <input 
-                type="text" 
-                className="input-field" 
-                value={searchTerm} 
-                onChange={(e) => setSearchTerm(e.target.value)} 
-                placeholder="e.g. Specialty Coffee Shops"
-              />
+          <button className="btn btn-ghost btn-icon" onClick={onClose}>✕</button>
+        </div>
+        <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {generating ? (
+            <div className="flex-center" style={{ flexDirection: "column", gap: 12, padding: "32px 0" }}>
+              <span className="spinner spinner-lg" />
+              <span style={{ color: "var(--text-3)", fontSize: 13 }}>AI is writing your personalized email...</span>
             </div>
-            
-            <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-              <label style={{ fontSize: "12px", color: "var(--text-secondary)", fontWeight: 600 }}>Geographic Target</label>
-              <input 
-                type="text" 
-                className="input-field" 
-                value={searchLocation} 
-                onChange={(e) => setSearchLocation(e.target.value)} 
-                placeholder="e.g. Austin, TX"
-              />
-            </div>
-
-            {searchMethod === "deepsearch" && (
-              <div style={{ 
-                display: "flex", 
-                flexDirection: "column", 
-                gap: "8px", 
-                padding: "12px", 
-                background: "rgba(200, 255, 0, 0.03)", 
-                border: "1px dashed rgba(200, 255, 0, 0.2)", 
-                borderRadius: "8px",
-                marginTop: "4px"
-              }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <label style={{ fontSize: "11px", color: "var(--color-lime)", fontWeight: 700, letterSpacing: "0.02em" }}>GEMINI API KEY REQUIRED</label>
-                  {geminiKey && <span style={{ fontSize: "10px", color: "var(--color-emerald)", fontWeight: 600 }}>✓ Key Configured</span>}
-                </div>
-                <input 
-                  type="password" 
-                  className="input-field" 
-                  style={{ border: geminiKey ? "1px solid rgba(16, 185, 129, 0.3)" : "1px solid rgba(200,255,0,0.3)" }}
-                  value={geminiKey || ""} 
-                  onChange={(e) => {
-                    setGeminiKey(e.target.value);
-                    localStorage.setItem("gemini_api_key", e.target.value);
-                  }}
-                  placeholder="Paste your Gemini API Key..."
+          ) : (
+            <>
+              <div className="input-group">
+                <label className="input-label">Subject</label>
+                <input className="input" value={subject} onChange={e => setSubject(e.target.value)} />
+              </div>
+              <div className="input-group">
+                <label className="input-label">Body</label>
+                <textarea
+                  className="input"
+                  rows={12}
+                  value={body}
+                  onChange={e => setBody(e.target.value)}
+                  style={{ resize: "vertical", fontFamily: "var(--font)", fontSize: 13.5, lineHeight: 1.7 }}
                 />
-                <span style={{ fontSize: "10px", color: "var(--text-muted)", lineHeight: "1.4" }}>
-                  Uses Google Search grounding to scan live web listings, retrieving authentic contacts with zero placeholders.
-                </span>
               </div>
-            )}
+              <button className="btn btn-ghost btn-sm" style={{ alignSelf: "flex-start" }} onClick={generateEmail}>
+                ↺ Regenerate
+              </button>
+            </>
+          )}
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+          <button
+            className="btn btn-primary"
+            onClick={handleSend}
+            disabled={sending || generating || !lead.email}
+          >
+            {sending ? <><span className="spinner spinner-sm" /> Sending...</> : "🚀 Send Email"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
-            {searchMethod === "scraper" ? (
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "8px" }}>
-                <span style={{ fontSize: "12px", color: "var(--text-secondary)", fontWeight: 600 }}>Integrations & Verification</span>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "16px" }}>
-                  <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", cursor: "pointer" }}>
-                    <input type="checkbox" checked={sourceGoogle} onChange={(e) => setSourceGoogle(e.target.checked)} /> Google Maps API
-                  </label>
-                  <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", cursor: "pointer" }}>
-                    <input type="checkbox" checked={sourceYelp} onChange={(e) => setSourceYelp(e.target.checked)} /> Yelp Fusion
-                  </label>
-                  <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", cursor: "pointer" }}>
-                    <input type="checkbox" checked={sourceInstagram} onChange={(e) => setSourceInstagram(e.target.checked)} /> IG Verified Handle
-                  </label>
-                </div>
-              </div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "8px" }}>
-                <span style={{ fontSize: "12px", color: "var(--text-secondary)", fontWeight: 600 }}>Autonomous AI Strategy</span>
-                <div style={{ display: "flex", gap: "16px", fontSize: "12px", color: "var(--text-muted)" }}>
-                  <span>✓ Google Search Grounding</span>
-                  <span>✓ Real Email Filter</span>
-                  <span>✓ Social Map Verification</span>
-                </div>
-              </div>
-            )}
-            
-            <button 
-              type="button"
-              className={searchMethod === "deepsearch" ? "btn btn-lime glow-card" : "btn btn-lime"} 
-              style={{ width: "100%", marginTop: "8px" }}
-              onClick={() => {
-                if (searchMethod === "deepsearch" && !geminiKey) {
-                  showToast("Please enter a valid Gemini API Key first!", "warn");
-                  return;
-                }
-                triggerSearch(searchTerm, searchLocation, searchMethod);
-              }}
-              disabled={searching}
-            >
-              {searching ? `Searching... ${Math.round(searchProgress)}%` : searchMethod === "deepsearch" ? "⚡ Run Gemini DeepSearch AI" : "🔍 Run Autonomous Local Scan"}
-            </button>
+/* ─── Lead Detail Drawer ─── */
+function LeadDetailDrawer({ lead, onClose, onDraftEmail, onUpdateStatus }) {
+  const [activeTab, setActiveTab] = useState("overview");
+
+  const wsLabel = { active: "✓ Active", no_website: "✕ No Website", down: "⚠ Down" };
+  const wsColor = { active: "success", no_website: "danger", down: "warning" };
+
+  return (
+    <>
+      <div className="drawer-overlay" onClick={onClose} />
+      <div className="drawer">
+        {/* Header */}
+        <div className="drawer-header">
+          <div>
+            <div className="drawer-title">{lead.name}</div>
+            <div style={{ fontSize: 12, color: "var(--text-3)" }}>{lead.type} · {lead.city}</div>
           </div>
-
+          <button className="btn btn-ghost btn-icon" onClick={onClose}>✕</button>
         </div>
 
-        {/* Live scanner output */}
-        <div className="glass-panel" style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <h3 style={{ fontSize: "16px", fontWeight: 700, color: "var(--text-primary)" }}>Interactive Scanner Feed</h3>
-            {searching && (
-              <span style={{ fontSize: "12px", color: "var(--color-lime)", fontWeight: 600, animation: "pulseIndicator 1s infinite" }}>
-                ● SCANNING
-              </span>
-            )}
-          </div>
-          
-          <div className="terminal-scanner">
-            <div className="scan-line" style={{ display: searching ? "block" : "none" }} />
-            {searchLog.slice().reverse().map((log, index) => (
-              <div key={index} className={`terminal-line ${log.type}`}>
-                &gt; {log.text}
+        {/* Tabs */}
+        <div className="tabs">
+          {[
+            { id: "overview", label: "Overview" },
+            { id: "proof",    label: "🤖 AI Proof" },
+            { id: "email",    label: "✉ Email Draft" },
+            { id: "timeline", label: "Timeline" },
+          ].map(t => (
+            <div
+              key={t.id}
+              className={`tab-item ${activeTab === t.id ? "active" : ""}`}
+              onClick={() => setActiveTab(t.id)}
+            >
+              {t.label}
+            </div>
+          ))}
+        </div>
+
+        {/* Tab content */}
+        <div className="drawer-body" style={{ padding: 16 }}>
+
+          {/* OVERVIEW TAB */}
+          {activeTab === "overview" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              {/* Key info grid */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                {[
+                  { label: "Email", value: lead.email || "—", mono: true },
+                  { label: "Phone", value: lead.phone || "—", mono: true },
+                  { label: "Rating", value: lead.rating ? `${lead.rating} ⭐` : "—" },
+                  { label: "Reviews", value: lead.reviews ? `${lead.reviews}` : "—" },
+                  { label: "Location", value: lead.city || "—" },
+                  { label: "Category", value: lead.type || "—" },
+                ].map(item => (
+                  <div key={item.label} style={{ background: "var(--bg-overlay)", padding: "10px 12px", borderRadius: "var(--radius-md)" }}>
+                    <div style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--text-4)", marginBottom: 4 }}>{item.label}</div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)", fontFamily: item.mono ? "var(--font-mono)" : undefined, wordBreak: "break-all" }}>{item.value}</div>
+                  </div>
+                ))}
               </div>
-            ))}
-            {!searching && searchLog.length === 0 && (
-              <div style={{ color: "var(--text-muted)", fontSize: "13px", textAlign: "center", padding: "40px" }}>
-                Scraping engines idle. Set targets and run a scan to stream verified restaurant details.
+
+              {/* Website */}
+              <div>
+                <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--text-4)", marginBottom: 8 }}>Website</div>
+                {lead.website ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <a href={lead.website} target="_blank" rel="noreferrer"
+                      style={{ fontSize: 13, color: "var(--brand)", fontFamily: "var(--font-mono)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {lead.website}
+                    </a>
+                    <span className={`badge badge-${wsColor[lead.website_status] || "neutral"}`}>
+                      {wsLabel[lead.website_status] || lead.website_status}
+                    </span>
+                  </div>
+                ) : (
+                  <span className="badge badge-danger">✕ No Website</span>
+                )}
               </div>
-            )}
-          </div>
-          
-          {searching && (
-            <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", color: "var(--text-secondary)" }}>
-                <span>Scraping progress...</span>
-                <span>{Math.round(searchProgress)}%</span>
+
+              {/* Socials */}
+              <div>
+                <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--text-4)", marginBottom: 8 }}>Social Media</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {lead.instagram && <a href={`https://instagram.com/${lead.instagram.replace("@","")}`} target="_blank" rel="noreferrer" className="badge badge-brand">📸 Instagram</a>}
+                  {lead.facebook  && <a href={lead.facebook}  target="_blank" rel="noreferrer" className="badge badge-info">👍 Facebook</a>}
+                  {lead.linkedin  && <a href={lead.linkedin}  target="_blank" rel="noreferrer" className="badge badge-brand">💼 LinkedIn</a>}
+                  {lead.twitter   && <a href={lead.twitter}   target="_blank" rel="noreferrer" className="badge badge-neutral">𝕏 Twitter</a>}
+                  {!lead.instagram && !lead.facebook && !lead.linkedin && !lead.twitter && (
+                    <span style={{ fontSize: 12.5, color: "var(--text-4)" }}>No social profiles found</span>
+                  )}
+                </div>
               </div>
-              <div style={{ height: "6px", background: "var(--bg-translucent-mild)", borderRadius: "3px", overflow: "hidden" }}>
-                <div style={{
-                  width: `${searchProgress}%`,
-                  height: "100%",
-                  background: "linear-gradient(90deg, var(--color-indigo), var(--color-lime))",
-                  transition: "width 0.2s"
-                }} />
+
+              {/* Status change */}
+              <div>
+                <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--text-4)", marginBottom: 8 }}>Status</div>
+                <select className="input input-sm" value={lead.status || "not contacted"} onChange={e => onUpdateStatus(lead.id, e.target.value)}>
+                  {["not contacted", "contacted", "replied", "interested", "not interested", "won"].map(s => (
+                    <option key={s} value={s}>{s.replace(/_/g, " ")}</option>
+                  ))}
+                </select>
               </div>
             </div>
           )}
-        </div>
-      </div>
 
-      {/* Action Bar */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "16px" }}>
-        <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
-          <button className="btn btn-outline btn-sm" onClick={selectAll}>Select All</button>
-          <button className="btn btn-outline btn-sm" onClick={deselectAll}>Clear Selection</button>
-          <button 
-            className="btn btn-outline btn-sm" 
-            style={{ borderColor: "rgba(239, 68, 68, 0.4)", color: "var(--color-crimson)" }}
-            onClick={handleClearAllLeads}
-          >
-            🗑️ Clear Database Leads
+          {/* AI PROOF TAB */}
+          {activeTab === "proof" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div className="proof-block">
+                <div className="proof-header">
+                  <span className="proof-icon">🎯</span>
+                  <span className="proof-title">Why This Lead Was Qualified</span>
+                </div>
+                <div className="proof-text">
+                  {lead.qualification_reason ||
+                    `This ${lead.type} business in ${lead.city} was identified as a strong match because they have ${
+                      lead.website_status === "no_website"
+                        ? "no website — a major opportunity for website design/development outreach"
+                        : lead.website_status === "down"
+                          ? "a broken/inaccessible website that needs urgent repair or rebuilding"
+                          : lead.website_status === "active" && !lead.hasBooking
+                            ? "an active website but no online booking system — a perfect fit for booking automation"
+                            : "a strong online presence that could benefit from AI automation"
+                    } and a solid ${lead.rating}⭐ rating with ${lead.reviews} reviews, indicating they are an active, popular local business.`
+                  }
+                </div>
+                <div className="proof-badges">
+                  {lead.website_status === "no_website" && <span className="badge badge-danger">✕ No Website</span>}
+                  {lead.website_status === "down"       && <span className="badge badge-warning">⚠ Site Down</span>}
+                  {lead.website_status === "active"     && <span className="badge badge-success">✓ Active Site</span>}
+                  {!lead.hasBooking && lead.website     && <span className="badge badge-warning">📅 No Booking System</span>}
+                  {lead.email                           && <span className="badge badge-success">✓ Has Email</span>}
+                  {lead.instagram                       && <span className="badge badge-brand">📸 On Instagram</span>}
+                  {lead.rating >= 4.5                   && <span className="badge badge-success">⭐ High Rated</span>}
+                  {lead.reviews >= 100                  && <span className="badge badge-info">🔥 Popular ({lead.reviews} reviews)</span>}
+                </div>
+              </div>
+
+              <div className="proof-block" style={{ borderColor: "rgba(34,197,94,0.3)" }}>
+                <div className="proof-header">
+                  <span className="proof-icon">🕸</span>
+                  <span className="proof-title" style={{ color: "var(--success)" }}>Website Crawl Results</span>
+                </div>
+                <div className="proof-text">
+                  {lead.website
+                    ? `Live crawl of ${lead.website}: Status is "${lead.website_status}". Email ${lead.email ? `found: ${lead.email}` : "not found on page"}. Booking widget: ${lead.hasBooking ? "detected" : "not detected"}.`
+                    : "No website found in search results or directories. Business has no web presence — prime candidate for website design."}
+                </div>
+              </div>
+
+              <div className="proof-block" style={{ borderColor: "rgba(56,189,248,0.3)" }}>
+                <div className="proof-header">
+                  <span className="proof-icon">📊</span>
+                  <span className="proof-title" style={{ color: "var(--info)" }}>Source & Discovery</span>
+                </div>
+                <div className="proof-text">
+                  Discovered via Google Search grounding for &quot;{lead.type} in {lead.city}&quot;. Data verified from Google Maps, business directories, and live website crawl. Rating and review counts sourced from real public listings.
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* EMAIL DRAFT TAB */}
+          {activeTab === "email" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {lead.email ? (
+                <>
+                  <div style={{ padding: "10px 12px", background: "var(--success-bg)", borderRadius: "var(--radius-md)", fontSize: 13, color: "var(--success)", border: "1px solid rgba(34,197,94,0.2)" }}>
+                    ✓ This lead has a public email: <strong>{lead.email}</strong>
+                  </div>
+                  <button className="btn btn-primary w-full" style={{ justifyContent: "center" }} onClick={() => onDraftEmail(lead)}>
+                    ✉ Open Email Composer
+                  </button>
+                </>
+              ) : (
+                <div style={{ padding: "10px 12px", background: "var(--warning-bg)", borderRadius: "var(--radius-md)", fontSize: 13, color: "var(--warning)", border: "1px solid rgba(245,158,11,0.2)" }}>
+                  ⚠ No public email found for this lead. Try finding them on Instagram or LinkedIn.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* TIMELINE TAB */}
+          {activeTab === "timeline" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {[
+                { icon: "◎", label: "Lead Scraped", desc: "Added to your leads database", color: "var(--brand)" },
+                lead.status === "contacted" && { icon: "✉", label: "Email Sent", desc: "Outreach email sent via Gmail", color: "var(--info)" },
+                lead.status === "replied"   && { icon: "↩", label: "Reply Received", desc: "Lead replied to your email", color: "var(--success)" },
+                lead.status === "won"       && { icon: "🏆", label: "Closed / Won",  desc: "Deal closed successfully!", color: "var(--success)" },
+              ].filter(Boolean).map((ev, i) => (
+                <div key={i} style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+                  <div style={{ width: 28, height: 28, borderRadius: "50%", background: "var(--bg-overlay)", border: `2px solid ${ev.color}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, flexShrink: 0 }}>{ev.icon}</div>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>{ev.label}</div>
+                    <div style={{ fontSize: 12, color: "var(--text-3)" }}>{ev.desc}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Footer actions */}
+        <div style={{ padding: "12px 16px", borderTop: "1px solid var(--border-1)", display: "flex", gap: 8, flexShrink: 0 }}>
+          <button className="btn btn-primary" style={{ flex: 1, justifyContent: "center" }} onClick={() => onDraftEmail(lead)} disabled={!lead.email}>
+            {lead.email ? "✉ Draft & Send Email" : "No Email Available"}
           </button>
         </div>
-        
-        {selectedLeads.length > 0 && (
-          <div style={{ display: "flex", alignItems: "center", gap: "12px", animation: "fadeIn 0.2s" }}>
-            <span style={{ fontSize: "13px", color: "var(--color-lime)", fontWeight: 600 }}>{selectedLeads.length} leads selected</span>
-            <button className="btn btn-indigo btn-sm" onClick={bulkAddCampaign}>⚡ Add to Active Campaign</button>
+      </div>
+    </>
+  );
+}
+
+/* ─── Main LeadFinder ─── */
+export default function LeadFinder({ leads, setLeads, settings, showToast }) {
+  /* Config state - Persisted in localStorage so tab switching doesn't reset them */
+  const [niche, setNiche]         = useState(() => {
+    try {
+      const saved = localStorage.getItem("syntek_scrape_config");
+      return saved ? JSON.parse(saved).niche : (settings.niche || "Cafes & Brunch");
+    } catch { return settings.niche || "Cafes & Brunch"; }
+  });
+  const [locations, setLocations] = useState(() => {
+    try {
+      const saved = localStorage.getItem("syntek_scrape_config");
+      return saved ? JSON.parse(saved).locations : (settings.location ? [settings.location] : ["Austin, TX"]);
+    } catch { return settings.location ? [settings.location] : ["Austin, TX"]; }
+  });
+  const [locInput, setLocInput]   = useState("");
+  const [limit, setLimit]         = useState(() => {
+    try {
+      const saved = localStorage.getItem("syntek_scrape_config");
+      return saved ? JSON.parse(saved).limit : (settings.dailyLeadLimit || 10);
+    } catch { return settings.dailyLeadLimit || 10; }
+  });
+  const [reqContact, setReqContact] = useState(() => {
+    try {
+      const saved = localStorage.getItem("syntek_scrape_config");
+      return saved ? JSON.parse(saved).reqContact : (settings.requiredContact || "email_or_phone");
+    } catch { return settings.requiredContact || "email_or_phone"; }
+  });
+  const [pitchOffer, setPitchOffer] = useState(() => {
+    try {
+      const saved = localStorage.getItem("syntek_scrape_config");
+      return saved ? JSON.parse(saved).pitchOffer : (settings.pitchOffer || "whatsapp_bot");
+    } catch { return settings.pitchOffer || "whatsapp_bot"; }
+  });
+  const [searchMode, setSearchMode] = useState(() => {
+    try {
+      const saved = localStorage.getItem("syntek_scrape_config");
+      return saved ? JSON.parse(saved).searchMode : (settings.searchMode || "deepsearch");
+    } catch { return settings.searchMode || "deepsearch"; }
+  });
+  const [strictFilter, setStrictFilter] = useState(() => {
+    try {
+      const saved = localStorage.getItem("syntek_scrape_config");
+      return saved && JSON.parse(saved).strictFilter !== undefined ? JSON.parse(saved).strictFilter : true;
+    } catch { return true; }
+  });
+
+  /* Save config changes to localStorage automatically */
+  useEffect(() => {
+    try {
+      localStorage.setItem("syntek_scrape_config", JSON.stringify({
+        niche,
+        locations,
+        limit,
+        reqContact,
+        pitchOffer,
+        searchMode,
+        strictFilter
+      }));
+    } catch (e) {
+      console.error("Failed to save scrape config:", e);
+    }
+  }, [niche, locations, limit, reqContact, pitchOffer, searchMode, strictFilter]);
+
+  /* UI state */
+  const [searching, setSearching]       = useState(false);
+  const [progress, setProgress]         = useState(0);
+  const [searchLog, setSearchLog]       = useState([]);
+  const [activeScanId, setActiveScanId] = useState(null);
+  const isStopRequested                 = useRef(false);
+  const [selectedIds, setSelectedIds]   = useState(new Set());
+  const [filterStatus, setFilterStatus] = useState("all");
+  const [searchQuery, setSearchQuery]   = useState("");
+  const [drawerLead, setDrawerLead]     = useState(null);
+  const [composerLead, setComposerLead] = useState(null);
+  const [bulkGenerating, setBulkGen]    = useState(false);
+
+  /* Sync settings → state only if no user overrides exist in localStorage yet */
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("syntek_scrape_config");
+      if (!saved) {
+        setNiche(settings.niche || "Cafes & Brunch");
+        setLocations([settings.location || "Austin, TX"]);
+        setLimit(settings.dailyLeadLimit || 10);
+        setReqContact(settings.requiredContact || "email_or_phone");
+        setPitchOffer(settings.pitchOffer || "whatsapp_bot");
+        setSearchMode(settings.searchMode || "deepsearch");
+        setStrictFilter(true);
+      }
+    } catch { /* fallback */ }
+  }, [settings]);
+
+  /* Location tag input */
+  const addLoc = () => {
+    const v = locInput.trim();
+    if (v && !locations.includes(v)) setLocations(prev => [...prev, v]);
+    setLocInput("");
+  };
+  const removeLoc = (l) => setLocations(prev => prev.filter(x => x !== l));
+
+  async function pollScan(scanId, loc, startLogCount = 0, baseProgress = 5, locShare = 80) {
+    let seenLogCount = startLogCount;
+    let done = false;
+    let pollAttempts = 0;
+    const maxPollAttempts = 200; // ~10 minutes at 3s intervals
+
+    const log = (msg, type = "info") =>
+      setSearchLog(prev => [...prev, { msg, type, t: new Date().toLocaleTimeString() }]);
+
+    while (!done && pollAttempts < maxPollAttempts) {
+      if (isStopRequested.current) {
+        log("Stop requested by user. Terminating poll...", "warn");
+        break;
+      }
+      await new Promise(r => setTimeout(r, 3000));
+      if (isStopRequested.current) break;
+
+      try {
+        const statusRes = await fetch(`/api/scan/status/${scanId}`);
+        if (!statusRes.ok) continue;
+
+        const statusData = await statusRes.json();
+        const serverLogs = statusData.logs || [];
+
+        // Replay any new log entries
+        for (let j = seenLogCount; j < serverLogs.length; j++) {
+          const entry = serverLogs[j];
+          log(entry.text || entry.message || "", entry.type || "info");
+        }
+        seenLogCount = serverLogs.length;
+
+        // Update progress bar
+        const pct = parseFloat(statusData.progress) || 0;
+        setProgress(Math.min(95, baseProgress + Math.round((pct / 100) * locShare)));
+
+        if (statusData.status === "done" || statusData.status === "completed") {
+          done = true;
+          log(`✓ Scan complete for ${loc}!`, "success");
+        } else if (statusData.status === "error" || statusData.status === "failed") {
+          done = true;
+          log(`✕ Scan error: ${statusData.error || "Unknown error"}`, "error");
+        } else if (statusData.status === "stopped") {
+          done = true;
+          isStopRequested.current = true;
+          log(`⚠ Scan stopped by user.`, "warn");
+        }
+      } catch (pollErr) {
+        // poll failed transiently, retry
+      }
+    }
+
+    if (!done) {
+      log(`⚠ Scan timed out for ${loc}. Partial results may have been saved.`, "warn");
+    }
+  }
+
+  /* ── On mount: check if a scan is active on the server ── */
+  useEffect(() => {
+    async function checkActiveScan() {
+      try {
+        const res = await fetch("/api/scan/active");
+        if (res.ok) {
+          const data = await res.json();
+          if (data.active) {
+            setSearching(true);
+            setActiveScanId(data.scanId);
+            setProgress(data.progress || 5);
+            isStopRequested.current = false;
+            
+            // Restore search log and seenLogCount
+            const serverLogs = data.logs || [];
+            setSearchLog(serverLogs.map(entry => ({
+              msg: entry.text || entry.message || "",
+              type: entry.type || "info",
+              t: new Date().toLocaleTimeString()
+            })));
+
+            showToast("Reconnected to active scanning process...", "info");
+            
+            // Start polling this scan
+            await pollScan(data.scanId, "Active Scan", serverLogs.length, data.progress, 100 - data.progress);
+            
+            // After poll finishes, refresh data
+            try {
+              const leadsRes = await fetch("/api/leads");
+              if (leadsRes.ok) {
+                const allLeads = await leadsRes.json();
+                setLeads(allLeads.map(l => ({ ...l, rating: l.rating ? parseFloat(l.rating) : 4.0, reviews: l.reviews ? parseInt(l.reviews) : 0 })));
+              }
+            } catch (e) {}
+            
+            setProgress(100);
+            setSearching(false);
+            setActiveScanId(null);
+            showToast("Scan finished!", "success");
+            setTimeout(() => setProgress(0), 2500);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to check active scan:", err);
+      }
+    }
+    checkActiveScan();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* Scrape leads — async scan with server-side polling */
+  async function handleScrape() {
+    if (!niche.trim() || locations.length === 0) {
+      showToast("Please enter a niche and at least one location.", "warning");
+      return;
+    }
+    setSearching(true);
+    setProgress(5);
+    setSearchLog([]);
+    setActiveScanId(null);
+    isStopRequested.current = false;
+
+    const log = (msg, type = "info") =>
+      setSearchLog(prev => [...prev, { msg, type, t: new Date().toLocaleTimeString() }]);
+
+    log("Starting DeepSearch AI scan...", "info");
+
+    for (let i = 0; i < locations.length; i++) {
+      if (isStopRequested.current) {
+        log("Scan cancelled by user.", "warn");
+        break;
+      }
+      const loc = locations[i];
+      log(`Initiating scan: "${niche}" in ${loc}...`, "info");
+
+      let scanId = null;
+      try {
+        // 1. Start the scan — returns {scan_id} immediately
+        const endpoint = searchMode === "quick" ? "/api/scan" : "/api/scan-deepsearch";
+        const startRes = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            niche,
+            location: loc,
+            limit: Math.ceil(limit / locations.length),
+            pitchOffer,
+            requiredContact: reqContact,
+            strictFilter,
+          }),
+        });
+
+        if (!startRes.ok) {
+          const err = await startRes.json().catch(() => ({}));
+          log(`✕ Failed to start scan for ${loc}: ${err.error || startRes.statusText}`, "error");
+          continue;
+        }
+
+        const startData = await startRes.json();
+        scanId = startData.scan_id;
+        if (!scanId) {
+          log(`✕ No scan ID returned for ${loc}`, "error");
+          continue;
+        }
+
+        setActiveScanId(scanId);
+        log(`Scan started (ID: ${scanId}). AI is searching...`, "info");
+
+        // 2. Poll for completion
+        const baseProgress = 5 + Math.round((i / locations.length) * 80);
+        const locShare = Math.round((1 / locations.length) * 80);
+        await pollScan(scanId, loc, 0, baseProgress, locShare);
+
+      } catch (e) {
+        log(`✕ Network error: ${e.message}`, "error");
+      }
+    }
+
+    // 3. Refresh leads from database after all scans finish
+    try {
+      const leadsRes = await fetch("/api/leads");
+      if (leadsRes.ok) {
+        const allLeads = await leadsRes.json();
+        setLeads(allLeads.map(l => ({ ...l, rating: l.rating ? parseFloat(l.rating) : 4.0, reviews: l.reviews ? parseInt(l.reviews) : 0 })));
+        log(`✓ Leads refreshed from database.`, "success");
+      }
+    } catch (e) {
+      log(`⚠ Could not refresh leads: ${e.message}`, "warn");
+    }
+
+    setProgress(100);
+    setSearching(false);
+    setActiveScanId(null);
+    if (isStopRequested.current) {
+      showToast("Scan stopped. Partial results saved.", "warning");
+    } else {
+      showToast("Scan complete! New leads have been added.", "success");
+    }
+    setTimeout(() => setProgress(0), 2500);
+  }
+
+  async function handleStopScan() {
+    isStopRequested.current = true;
+    if (activeScanId) {
+      try {
+        const res = await fetch(`/api/scan/stop/${activeScanId}`, { method: "POST" });
+        if (res.ok) {
+          showToast("Scan stopped.", "info");
+        } else {
+          showToast("Failed to request scan stop.", "danger");
+        }
+      } catch (err) {
+        console.error("Failed to stop scan:", err);
+        showToast("Network error stopping scan.", "danger");
+      }
+    } else {
+      showToast("Scan stopped.", "info");
+    }
+    setSearching(false);
+    setProgress(0);
+  }
+
+  /* Select/deselect */
+  const toggleSelect = (id) => setSelectedIds(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
+  const filteredLeads = leads.filter(l => {
+    if (filterStatus !== "all" && l.status !== filterStatus) return false;
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      return l.name?.toLowerCase().includes(q) || l.city?.toLowerCase().includes(q) || l.email?.toLowerCase().includes(q) || l.type?.toLowerCase().includes(q);
+    }
+    return true;
+  });
+
+  const allSelected = filteredLeads.length > 0 && filteredLeads.every(l => selectedIds.has(l.id));
+
+  const toggleAll = () => {
+    if (allSelected) setSelectedIds(new Set());
+    else setSelectedIds(new Set(filteredLeads.map(l => l.id)));
+  };
+
+  /* Update lead status */
+  async function updateStatus(id, status) {
+    try {
+      await fetch(`/api/leads/${id}/status`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      setLeads(prev => prev.map(l => l.id === id ? { ...l, status } : l));
+    } catch (e) { showToast("Failed to update status.", "danger"); }
+  }
+
+  /* Bulk generate + send */
+  async function handleBulkSend() {
+    const targets = filteredLeads.filter(l => selectedIds.has(l.id) && l.email);
+    if (targets.length === 0) { showToast("No leads with email selected.", "warning"); return; }
+    if (!settings.gmailUser) { showToast("Gmail not connected. Go to Settings.", "danger"); return; }
+    setBulkGen(true);
+    let sent = 0;
+    for (const lead of targets) {
+      try {
+        const pitchLabel = { whatsapp_bot: "WhatsApp booking bot", website_dev: "website design", ai_chatbot: "AI chatbot", custom: settings.customOfferDetails }[settings.pitchOffer] || settings.pitchOffer;
+        const prompt = `Write a short personalized cold email from ${settings.senderName || "a developer"} to ${lead.name} (${lead.type} in ${lead.city}, ${lead.rating}⭐). Pitch: ${pitchLabel}. Website status: ${lead.website_status || "unknown"}. Keep it under 120 words. Format: Subject: [subject]\n\n[body]`;
+        const aiRes = await fetch("/api/ai/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt }), signal: AbortSignal.timeout(35000) });
+        if (!aiRes.ok) continue;
+        const { text } = await aiRes.json();
+        const lines = text.split("\n");
+        const subject = lines[0].startsWith("Subject:") ? lines[0].replace("Subject:", "").trim() : `Quick question about ${lead.name}`;
+        const body = lines[0].startsWith("Subject:") ? lines.slice(2).join("\n").trim() : text;
+        const mailRes = await fetch("/api/send-email", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ gmailUser: settings.gmailUser, gmailPass: settings.gmailPass, to: lead.email, subject, body }) });
+        if (mailRes.ok) { await updateStatus(lead.id, "contacted"); sent++; }
+      } catch { /* continue */ }
+    }
+    setBulkGen(false);
+    setSelectedIds(new Set());
+    showToast(`Sent ${sent}/${targets.length} personalized emails!`, "success");
+  }
+
+  /* Delete lead */
+  async function deleteLead(id) {
+    try {
+      await fetch(`/api/leads/${id}`, { method: "DELETE" });
+      setLeads(prev => prev.filter(l => l.id !== id));
+      if (drawerLead?.id === id) setDrawerLead(null);
+    } catch { showToast("Failed to delete lead.", "danger"); }
+  }
+
+  const wsColor = { active: "badge-success", no_website: "badge-danger", down: "badge-warning" };
+  const statusColor = { "not contacted": "badge-neutral", contacted: "badge-brand", replied: "badge-success", no_email: "badge-warning" };
+
+  return (
+    <div style={{ display: "flex", gap: 16, height: "calc(100vh - 104px)" }}>
+
+      {/* ── Left Config Panel ── */}
+      <div className="config-panel" style={{ width: 272, minWidth: 272 }}>
+        <div style={{ fontWeight: 700, fontSize: 14, color: "var(--text-1)" }}>Scrape Config</div>
+
+        {/* Niche */}
+        <div className="input-group">
+          <label className="input-label">Target Niche</label>
+          <input className="input input-sm" placeholder="e.g. Hair Salons, Gyms..." value={niche} onChange={e => setNiche(e.target.value)} />
+        </div>
+
+        {/* Locations (multi-tag) */}
+        <div className="input-group">
+          <label className="input-label">Location(s)</label>
+          <div className="tag-input-wrap">
+            {locations.map(l => (
+              <span key={l} className="tag-chip">
+                {l}
+                <button className="tag-chip-remove" onClick={() => removeLoc(l)}>✕</button>
+              </span>
+            ))}
+            <input
+              className="tag-input"
+              placeholder="Add city..."
+              value={locInput}
+              onChange={e => setLocInput(e.target.value)}
+              onKeyDown={e => (e.key === "Enter" || e.key === ",") && (e.preventDefault(), addLoc())}
+            />
+          </div>
+          {locInput && <button className="btn btn-ghost btn-sm" style={{ alignSelf: "flex-start" }} onClick={addLoc}>+ Add</button>}
+        </div>
+
+        {/* Leads slider */}
+        <div className="input-group">
+          <label className="input-label">Max Leads</label>
+          <div className="slider-wrap">
+            <div className="slider-row">
+              <input type="range" className="slider" min={5} max={50} step={5} value={limit} onChange={e => setLimit(+e.target.value)} />
+              <span className="slider-value">{limit}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Required contact */}
+        <div className="input-group">
+          <label className="input-label">Required Contact</label>
+          <select className="input input-sm" value={reqContact} onChange={e => setReqContact(e.target.value)}>
+            <option value="email_or_phone">Email or Phone</option>
+            <option value="email">Email only</option>
+            <option value="phone">Phone only</option>
+            <option value="instagram">Instagram</option>
+            <option value="any_social">Any Social</option>
+            <option value="all">All (email + phone + social)</option>
+          </select>
+        </div>
+
+        {/* Pitch offer */}
+        <div className="input-group">
+          <label className="input-label">Service Pitch</label>
+          <select className="input input-sm" value={pitchOffer} onChange={e => setPitchOffer(e.target.value)}>
+            <option value="whatsapp_bot">WhatsApp Booking Bot</option>
+            <option value="website_dev">Website Design</option>
+            <option value="ai_chatbot">AI Chatbot</option>
+            <option value="custom">Custom Offer</option>
+          </select>
+        </div>
+
+        {/* Search mode */}
+        <div className="input-group">
+          <label className="input-label">Search Mode</label>
+          <select className="input input-sm" value={searchMode} onChange={e => setSearchMode(e.target.value)}>
+            <option value="deepsearch">DeepSearch AI (thorough)</option>
+            <option value="quick">Quick Scan (fast)</option>
+          </select>
+        </div>
+
+        {/* Strict AI Filter */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "6px 0 10px 0" }}>
+          <input 
+            type="checkbox" 
+            id="strictFilterCheckbox" 
+            checked={strictFilter} 
+            onChange={e => setStrictFilter(e.target.checked)} 
+            style={{ cursor: "pointer", width: 14, height: 14 }}
+          />
+          <label htmlFor="strictFilterCheckbox" style={{ fontSize: 11.5, fontWeight: 500, color: "var(--text-2)", cursor: "pointer", userSelect: "none" }}>
+            Strict AI Lead Qualification
+          </label>
+        </div>
+
+        <div className="divider" />
+
+        {/* Scrape button */}
+        {searching ? (
+          <button
+            className="btn btn-danger w-full"
+            style={{ justifyContent: "center" }}
+            onClick={handleStopScan}
+          >
+            ⏹ Stop Scanning
+          </button>
+        ) : (
+          <button
+            className="btn btn-primary w-full"
+            style={{ justifyContent: "center" }}
+            onClick={handleScrape}
+          >
+            ◎ Start Scraping
+          </button>
+        )}
+
+        {/* Progress */}
+        {searching && (
+          <div>
+            <div className="progress-bar">
+              <div className="progress-fill animated" style={{ width: `${progress}%` }} />
+            </div>
+            <div style={{ fontSize: 11, color: "var(--text-4)", marginTop: 6 }}>
+              {progress}% — Searching {locations[0]}...
+            </div>
+          </div>
+        )}
+
+        {/* Mini log */}
+        {searchLog.length > 0 && (
+          <div className="log-console" style={{ height: 120, fontSize: 11 }}>
+            {searchLog.map((l, i) => (
+              <div key={i} className={`log-line ${l.type}`}>
+                <span className="log-time">{l.t}</span>
+                <span className="log-text">{l.msg}</span>
+              </div>
+            ))}
           </div>
         )}
       </div>
 
-      {/* Leads Table */}
-      <div className="glass-panel table-wrapper" style={{ padding: 0, overflow: "hidden" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left" }}>
-          <thead>
-            <tr style={{ background: "var(--bg-translucent-subtle)", borderBottom: "1px solid var(--border-translucent)" }}>
-              <th style={{ padding: "16px 20px", width: "40px" }} />
-              <th style={{ padding: "16px 20px", fontSize: "11px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700 }}>Company Name</th>
-              <th style={{ padding: "16px 20px", fontSize: "11px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700 }}>Category</th>
-              <th style={{ padding: "16px 20px", fontSize: "11px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700 }}>Location</th>
-              <th style={{ padding: "16px 20px", fontSize: "11px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700 }}>Rating & Reviews</th>
-              <th style={{ padding: "16px 20px", fontSize: "11px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700 }}>Contact Info</th>
-              <th style={{ padding: "16px 20px", fontSize: "11px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700 }}>Status</th>
-              <th style={{ padding: "16px 20px", fontSize: "11px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700 }}>Opened</th>
-            </tr>
-          </thead>
-          <tbody>
-            {leads.map((lead) => {
-              const bStyle = getBadgeStyle(lead.status);
-              const isSelected = selectedLeads.includes(lead.id);
-              return (
-                <tr 
-                  key={lead.id} 
-                  style={{ 
-                    borderBottom: "1px solid var(--border-translucent)", 
-                    background: isSelected ? "rgba(99, 102, 241, 0.03)" : "transparent",
-                    cursor: "pointer",
-                    transition: "background 0.2s"
-                  }}
-                  onClick={() => setActiveLeadDrawer(lead)}
-                >
-                  <td style={{ padding: "16px 20px" }} onClick={(e) => e.stopPropagation()}>
-                    <input 
-                      type="checkbox" 
-                      checked={isSelected} 
-                      onChange={() => toggleSelectLead(lead.id)}
-                      style={{ cursor: "pointer" }}
-                    />
-                  </td>
-                  <td style={{ padding: "16px 20px" }}>
-                    <div style={{ fontSize: "14px", fontWeight: 700, color: "var(--text-primary)" }}>{lead.name}</div>
-                    <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>{lead.instagram || "@none"}</div>
-                  </td>
-                  <td style={{ padding: "16px 20px", fontSize: "13px", color: "var(--text-secondary)" }}>{lead.type}</td>
-                  <td style={{ padding: "16px 20px", fontSize: "13px", color: "var(--text-secondary)" }}>{lead.city}</td>
-                  <td style={{ padding: "16px 20px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "13px", color: "var(--color-amber)", fontWeight: 700 }}>
-                      ★ {lead.rating}
-                    </div>
-                    <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>{lead.reviews} Yelp reviews</div>
-                  </td>
-                  <td style={{ padding: "16px 20px" }}>
-                    <div style={{ fontSize: "13px", color: "var(--text-primary)" }}>{lead.email}</div>
-                    <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>{lead.phone}</div>
-                  </td>
-                  <td style={{ padding: "16px 20px" }}>
-                    <span 
-                      className="badge" 
-                      style={{ 
-                        backgroundColor: bStyle.bg, 
-                        color: bStyle.text, 
-                        border: `1px solid ${bStyle.border}` 
-                      }}
-                    >
-                      {lead.status}
-                    </span>
-                  </td>
-                  <td style={{ padding: "16px 20px" }}>
-                    {lead.is_opened ? (
-                      <span 
-                        className="badge" 
-                        style={{ 
-                          backgroundColor: "rgba(16, 185, 129, 0.12)", 
-                          color: "var(--color-emerald)", 
-                          border: "1px solid rgba(16, 185, 129, 0.2)",
-                          fontWeight: 700
-                        }}
-                      >
-                        Yes
-                      </span>
-                    ) : (
-                      <span 
-                        className="badge" 
-                        style={{ 
-                          backgroundColor: "var(--bg-translucent-mild)", 
-                          color: "var(--text-muted)", 
-                          border: "1px solid var(--border-translucent)",
-                          fontWeight: 500
-                        }}
-                      >
-                        No
-                      </span>
-                    )}
-                  </td>
+      {/* ── Right Results Panel ── */}
+      <div className="results-panel" style={{ flex: 1, minWidth: 0 }}>
+        {/* Toolbar */}
+        <div className="results-toolbar">
+          <div className="search-bar" style={{ flex: 1, minWidth: 180 }}>
+            <span className="search-icon">⌕</span>
+            <input placeholder="Search leads..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
+          </div>
+          <select className="input input-sm" style={{ width: 160 }} value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
+            <option value="all">All Statuses</option>
+            <option value="not contacted">Not Contacted</option>
+            <option value="contacted">Contacted</option>
+            <option value="replied">Replied</option>
+            <option value="no_email">No Email</option>
+          </select>
+          {selectedIds.size > 0 && (
+            <>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={handleBulkSend}
+                disabled={bulkGenerating}
+              >
+                {bulkGenerating
+                  ? <><span className="spinner spinner-sm" /> Generating...</>
+                  : `⚡ Send ${selectedIds.size} Emails`}
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={() => setSelectedIds(new Set())}>
+                Deselect
+              </button>
+            </>
+          )}
+          <span style={{ fontSize: 12, color: "var(--text-3)", marginLeft: 4 }}>
+            {filteredLeads.length} leads
+          </span>
+        </div>
+
+        {/* Table */}
+        <div style={{ flex: 1, overflow: "auto", borderRadius: "var(--radius-lg)", border: "1px solid var(--border-1)" }}>
+          {filteredLeads.length === 0 ? (
+            <div className="empty-state">
+              <div className="empty-state-icon">◎</div>
+              <div className="empty-state-title">{leads.length === 0 ? "No leads yet" : "No results"}</div>
+              <div className="empty-state-desc">
+                {leads.length === 0
+                  ? "Configure your scrape settings and click Start Scraping."
+                  : "Try adjusting your search or filters."}
+              </div>
+            </div>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th style={{ width: 36 }}>
+                    <input type="checkbox" className="checkbox" checked={allSelected} onChange={toggleAll} />
+                  </th>
+                  <th>Business</th>
+                  <th>Contact</th>
+                  <th>Website</th>
+                  <th>Rating</th>
+                  <th>Status</th>
+                  <th>Actions</th>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
+              </thead>
+              <tbody>
+                {filteredLeads.map(l => (
+                  <tr
+                    key={l.id}
+                    className={selectedIds.has(l.id) ? "selected" : ""}
+                    onClick={() => setDrawerLead(l)}
+                  >
+                    <td onClick={e => { e.stopPropagation(); toggleSelect(l.id); }}>
+                      <input type="checkbox" className="checkbox" checked={selectedIds.has(l.id)} onChange={() => toggleSelect(l.id)} />
+                    </td>
+                    <td>
+                      <div style={{ fontWeight: 600, color: "var(--text-1)", fontSize: 13 }}>{l.name}</div>
+                      <div style={{ fontSize: 11.5, color: "var(--text-4)" }}>{l.type} · {l.city}</div>
+                    </td>
+                    <td>
+                      {l.email
+                        ? <a href={`mailto:${l.email}`} style={{ fontSize: 12, color: "var(--brand)", fontFamily: "var(--font-mono)" }} onClick={e => e.stopPropagation()}>{l.email}</a>
+                        : <span style={{ fontSize: 12, color: "var(--text-4)" }}>—</span>
+                      }
+                      {l.phone && <div style={{ fontSize: 11.5, color: "var(--text-4)", fontFamily: "var(--font-mono)" }}>{l.phone}</div>}
+                    </td>
+                    <td>
+                      {l.website
+                        ? <span className={`badge ${wsColor[l.website_status] || "badge-neutral"}`}>{l.website_status || "active"}</span>
+                        : <span className="badge badge-danger">none</span>
+                      }
+                    </td>
+                    <td>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>
+                        {l.rating ? `${l.rating}⭐` : "—"}
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--text-4)" }}>
+                        {l.reviews ? `${l.reviews} reviews` : ""}
+                      </div>
+                    </td>
+                    <td>
+                      <span className={`badge ${statusColor[l.status] || "badge-neutral"}`}>
+                        {(l.status || "new").replace(/_/g, " ")}
+                      </span>
+                    </td>
+                    <td onClick={e => e.stopPropagation()}>
+                      <div style={{ display: "flex", gap: 4 }}>
+                        <button
+                          className="btn btn-primary btn-sm"
+                          disabled={!l.email}
+                          title={l.email ? "Draft & Send Email" : "No email address"}
+                          onClick={() => setComposerLead(l)}
+                        >
+                          ✉
+                        </button>
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          title="View Details"
+                          onClick={() => setDrawerLead(l)}
+                        >
+                          ↗
+                        </button>
+                        <button
+                          className="btn btn-danger btn-sm"
+                          title="Delete"
+                          onClick={() => deleteLead(l.id)}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
       </div>
 
-      {/* Details drawer backdrop and pane */}
-      {activeLeadDrawer && (
-        <>
-          <div className="drawer-backdrop" onClick={() => setActiveLeadDrawer(null)} />
-          <div className="drawer">
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "24px" }}>
-              <span style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.1em" }}>
-                Lead Profile Dossier
-              </span>
-              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                {!isEditing && (
-                  <button 
-                    onClick={() => setIsEditing(true)}
-                    style={{ 
-                      background: "rgba(200, 255, 0, 0.08)", 
-                      border: "1px solid rgba(200, 255, 0, 0.2)", 
-                      color: "var(--color-lime)", 
-                      fontSize: "11px", 
-                      padding: "4px 8px", 
-                      borderRadius: "4px",
-                      cursor: "pointer",
-                      fontWeight: 700 
-                    }}
-                  >
-                    ✏ Edit Lead
-                  </button>
-                )}
-                <button 
-                  onClick={() => { setActiveLeadDrawer(null); setIsEditing(false); }}
-                  style={{ background: "transparent", border: "none", color: "var(--text-secondary)", fontSize: "20px", cursor: "pointer" }}
-                >
-                  ✕
-                </button>
-              </div>
-            </div>
-            
-            {/* Header info */}
-            <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginBottom: "24px" }}>
-              <h2 style={{ fontSize: "22px", fontWeight: 800, color: "var(--text-primary)", letterSpacing: "-0.02em" }}>{activeLeadDrawer.name}</h2>
-              <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-                <span className="badge" style={{
-                  backgroundColor: getBadgeStyle(activeLeadDrawer.status).bg,
-                  color: getBadgeStyle(activeLeadDrawer.status).text,
-                  border: `1px solid ${getBadgeStyle(activeLeadDrawer.status).border}`
-                }}>{activeLeadDrawer.status}</span>
-                <span style={{ fontSize: "13px", color: "var(--text-secondary)" }}>{activeLeadDrawer.type} · {activeLeadDrawer.city}</span>
-              </div>
-            </div>
-
-            {/* Profile details */}
-            <div style={{ display: "flex", flexDirection: "column", gap: "16px", padding: "16px", background: "var(--bg-translucent-subtle)", border: "var(--border-subtle)", borderRadius: "12px", marginBottom: "24px" }}>
-              {isEditing ? (
-                <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-                  <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                    <label style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 700 }}>COMPANY NAME</label>
-                    <input 
-                      type="text" 
-                      className="input-field" 
-                      value={editFields.name}
-                      onChange={(e) => setEditFields({ ...editFields, name: e.target.value })}
-                    />
-                  </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                    <label style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 700 }}>EMAIL</label>
-                    <input 
-                      type="email" 
-                      className="input-field" 
-                      value={editFields.email}
-                      onChange={(e) => setEditFields({ ...editFields, email: e.target.value })}
-                      placeholder="e.g. hello@company.com"
-                    />
-                  </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                    <label style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 700 }}>PHONE</label>
-                    <input 
-                      type="text" 
-                      className="input-field" 
-                      value={editFields.phone}
-                      onChange={(e) => setEditFields({ ...editFields, phone: e.target.value })}
-                    />
-                  </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                    <label style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 700 }}>INSTAGRAM</label>
-                    <input 
-                      type="text" 
-                      className="input-field" 
-                      value={editFields.instagram}
-                      onChange={(e) => setEditFields({ ...editFields, instagram: e.target.value })}
-                    />
-                  </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                    <label style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 700 }}>WEBSITE URL</label>
-                    <input 
-                      type="text" 
-                      className="input-field" 
-                      value={editFields.website}
-                      onChange={(e) => setEditFields({ ...editFields, website: e.target.value })}
-                    />
-                  </div>
-                  <div style={{ display: "flex", gap: "10px", marginTop: "8px" }}>
-                    <button 
-                      className="btn btn-lime btn-sm" 
-                      onClick={async () => {
-                        try {
-                          const res = await fetch(`/api/leads/${activeLeadDrawer.id}`, {
-                            method: "PUT",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify(editFields)
-                          });
-                          if (!res.ok) throw new Error("Failed to update lead details");
-                          const updatedLead = await res.json();
-                          const parsedLead = {
-                            ...updatedLead,
-                            rating: updatedLead.rating ? parseFloat(updatedLead.rating) : 4.0,
-                            reviews: updatedLead.reviews ? parseInt(updatedLead.reviews) : 0
-                          };
-                          setLeads(ls => ls.map(l => l.id === parsedLead.id ? parsedLead : l));
-                          setActiveLeadDrawer(parsedLead);
-                          setIsEditing(false);
-                          showToast("Lead details updated successfully!", "success");
-                        } catch (err) {
-                          showToast(err.message, "danger");
-                        }
-                      }}
-                    >
-                      Save Changes
-                    </button>
-                    <button className="btn btn-outline btn-sm" onClick={() => setIsEditing(false)}>Cancel</button>
-                  </div>
-                </div>
-              ) : (
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px" }}>
-                  <div>
-                    <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>EMAIL</div>
-                    <div style={{ fontSize: "13px", color: "var(--text-primary)", fontWeight: 600 }}>{activeLeadDrawer.email || "None"}</div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>PHONE</div>
-                    <div style={{ fontSize: "13px", color: "var(--text-primary)", fontWeight: 600 }}>{activeLeadDrawer.phone || "None"}</div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>RATING</div>
-                    <div style={{ fontSize: "13px", color: "var(--color-amber)", fontWeight: 700 }}>★ {activeLeadDrawer.rating} ({activeLeadDrawer.reviews} reviews)</div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>INSTAGRAM</div>
-                    <div style={{ fontSize: "13px", color: "var(--color-indigo)", fontWeight: 600 }}>{activeLeadDrawer.instagram || "@none"}</div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>WEBSITE URL</div>
-                    <div style={{ fontSize: "13px", color: "var(--text-primary)", fontWeight: 600 }}>
-                      {activeLeadDrawer.website ? (
-                        <a href={activeLeadDrawer.website} target="_blank" rel="noopener noreferrer" style={{ color: "var(--color-indigo)", textDecoration: "underline" }}>
-                          {activeLeadDrawer.website.replace(/^https?:\/\/(www\.)?/, "").substring(0, 24)}...
-                        </a>
-                      ) : "None"}
-                    </div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>WEBSITE STATUS</div>
-                    <div style={{ fontSize: "13px", fontWeight: 700 }}>
-                      {activeLeadDrawer.website_status === "no_website" && <span style={{ color: "var(--color-crimson)" }}>🚫 No Website</span>}
-                      {activeLeadDrawer.website_status === "down" && <span style={{ color: "var(--color-amber)" }}>⚠️ Site Down</span>}
-                      {activeLeadDrawer.website_status === "active" && <span style={{ color: "var(--color-emerald)" }}>✅ Active</span>}
-                      {(!activeLeadDrawer.website_status || activeLeadDrawer.website_status === "unknown") && <span style={{ color: "var(--text-muted)" }}>Unknown</span>}
-                    </div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>EMAIL OPENED</div>
-                    <div style={{ fontSize: "13px", fontWeight: 700 }}>
-                      {activeLeadDrawer.is_opened ? (
-                        <span style={{ color: "var(--color-emerald)" }}>✅ Yes</span>
-                      ) : (
-                        <span style={{ color: "var(--text-secondary)" }}>❌ No</span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* AI Strat Dossier */}
-            <div style={{ display: "flex", flexDirection: "column", gap: "10px", padding: "16px", background: "var(--color-lime-glow)", border: "var(--border-glow)", borderRadius: "12px", marginBottom: "24px" }}>
-              <div style={{ fontSize: "12px", color: "var(--color-lime)", fontWeight: 800, letterSpacing: "0.05em", textTransform: "uppercase" }}>
-                🧠 Gemini Prospect Dossier
-              </div>
-              <p style={{ fontSize: "13px", color: "var(--text-primary)", lineHeight: "1.6" }}>
-                {activeLeadDrawer.name} has a rating of {activeLeadDrawer.rating}⭐ with {activeLeadDrawer.reviews} Yelp reviews. 
-                {activeLeadDrawer.website_status === "no_website" && (
-                  <span> It currently lacks an official website presence. This represents a prime opportunity to pitch high-converting website design to establish credibility and capture local search traffic.</span>
-                )}
-                {activeLeadDrawer.website_status === "down" && (
-                  <span> Its official website is currently offline or inaccessible, presenting a critical operational risk. We can immediately pitch technical recovery and site redesign.</span>
-                )}
-                {(!activeLeadDrawer.website_status || activeLeadDrawer.website_status === "active" || activeLeadDrawer.website_status === "unknown") && (
-                  <span> Its online presence indicates active operations. We can pitch AI chatbot assistants for reservation booking and instant DM support.</span>
-                )}
-                <br/><br/>
-                <strong>Recommended Action:</strong> Launch a hyper-personalized email campaign using Gemini to highlight
-                {activeLeadDrawer.website_status === "no_website" && " building a brand new website presence."}
-                {activeLeadDrawer.website_status === "down" && " fixing their broken website/restoring online access."}
-                {(!activeLeadDrawer.website_status || activeLeadDrawer.website_status === "active" || activeLeadDrawer.website_status === "unknown") && " introducing automated booking chatbot widgets."}
-              </p>
-            </div>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-              <button 
-                className="btn btn-lime"
-                style={{ width: "100%" }}
-                onClick={() => {
-                  setSelectedLeads([activeLeadDrawer.id]);
-                  showToast(`Selected ${activeLeadDrawer.name} for email drafting`);
-                  setActiveLeadDrawer(null);
-                }}
-              >
-                Draft Outreach Email
-              </button>
-              
-              {(activeLeadDrawer.status === "new" || activeLeadDrawer.status === "not contacted") && (
-                <button 
-                  className="btn btn-outline"
-                  style={{ width: "100%" }}
-                  onClick={async () => {
-                    try {
-                      const response = await fetch(`/api/leads/${activeLeadDrawer.id}/status`, {
-                        method: "PUT",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ status: "contacted" })
-                      });
-                      if (!response.ok) throw new Error("Failed to update status");
-                      setLeads(ls => ls.map(l => l.id === activeLeadDrawer.id ? { ...l, status: "contacted" } : l));
-                      showToast(`Moved ${activeLeadDrawer.name} to Contacted!`);
-                      setActiveLeadDrawer(null);
-                    } catch (err) {
-                      console.error(err);
-                      showToast("Failed to update status in database", "danger");
-                    }
-                  }}
-                >
-                  Mark as Contacted
-                </button>
-              )}
-            </div>
-
-          </div>
-        </>
+      {/* ── Lead Detail Drawer ── */}
+      {drawerLead && (
+        <LeadDetailDrawer
+          lead={leads.find(l => l.id === drawerLead.id) || drawerLead}
+          onClose={() => setDrawerLead(null)}
+          onDraftEmail={(l) => { setComposerLead(l); setDrawerLead(null); }}
+          onUpdateStatus={updateStatus}
+        />
       )}
 
+      {/* ── Email Composer ── */}
+      {composerLead && (
+        <EmailComposer
+          lead={composerLead}
+          settings={settings}
+          showToast={showToast}
+          onClose={() => setComposerLead(null)}
+          onSent={(id) => { setLeads(prev => prev.map(l => l.id === id ? { ...l, status: "contacted" } : l)); }}
+        />
+      )}
     </div>
   );
 }

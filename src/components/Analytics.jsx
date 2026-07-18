@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 
 function CustomSVGLineChart({ data, width = 500, height = 150 }) {
   const max = Math.max(...data, 1);
@@ -75,7 +75,7 @@ export default function Analytics({ leads }) {
     opensByDay: [0, 0, 0, 0, 0, 0, 0]
   });
   const [recommendation, setRecommendation] = useState("Loading AI copywriting insights...");
-  const [loading, setLoading] = useState(true);
+
 
   useEffect(() => {
     async function loadAnalytics() {
@@ -87,8 +87,6 @@ export default function Analytics({ leads }) {
         }
       } catch (err) {
         console.error("Failed to load analytics:", err);
-      } finally {
-        setLoading(false);
       }
     }
     
@@ -101,7 +99,7 @@ export default function Analytics({ leads }) {
         }
       } catch (err) {
         console.error("Failed to load recommendations:", err);
-        setRecommendation("Unable to connect to Gemini Recommendations Engine.");
+        setRecommendation("Unable to connect to Antigravity Recommendations Engine.");
       }
     }
 
@@ -110,12 +108,7 @@ export default function Analytics({ leads }) {
   }, [leads]);
 
   // regional conversion metrics calculation
-  const regionalData = [
-    { city: "Austin, TX", leads: Math.round(stats.leadsCount * 0.4), opened: Math.round(stats.emailsSent * 0.4 * (stats.openRate / 100)), replied: Math.round(stats.emailsSent * 0.4 * (stats.replyRate / 100)), conversion: stats.openRate },
-    { city: "Denver, CO", leads: Math.round(stats.leadsCount * 0.3), opened: Math.round(stats.emailsSent * 0.3 * (stats.openRate / 100)), replied: Math.round(stats.emailsSent * 0.3 * (stats.replyRate / 100)), conversion: Math.round(stats.openRate * 0.8) },
-    { city: "Portland, OR", leads: Math.round(stats.leadsCount * 0.2), opened: Math.round(stats.emailsSent * 0.2 * (stats.openRate / 100)), replied: Math.round(stats.emailsSent * 0.2 * (stats.replyRate / 100)), conversion: Math.round(stats.openRate * 0.6) },
-    { city: "Chicago, IL", leads: Math.round(stats.leadsCount * 0.1), opened: Math.round(stats.emailsSent * 0.1 * (stats.openRate / 100)), replied: Math.round(stats.emailsSent * 0.1 * (stats.replyRate / 100)), conversion: Math.round(stats.openRate * 0.5) }
-  ];
+  const regionalData = stats.regionalData || [];
 
   const funnelStages = [
     { label: "Scraped Leads Discovered", val: stats.leadsCount, pct: 100, color: "var(--color-indigo)" },
@@ -222,7 +215,7 @@ export default function Analytics({ leads }) {
         {/* Gemini Grounded copy recommendation widget */}
         <div className="glass-panel" style={{ border: "var(--border-glow)", background: "var(--color-indigo-glow)", display: "flex", flexDirection: "column", gap: "14px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--color-indigo)", fontWeight: 800, fontSize: "14px", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-            <span>♊ Gemini Copywriting Insights</span>
+            <span>Antigravity Copywriting Insights</span>
           </div>
           <p style={{ fontSize: "13px", color: "var(--text-primary)", lineHeight: "1.6", whiteSpace: "pre-line" }}>
             {recommendation}
@@ -234,24 +227,30 @@ export default function Analytics({ leads }) {
           <h3 style={{ fontSize: "16px", fontWeight: 700, color: "var(--text-primary)" }}>Campaign Breakdown by Region</h3>
           
           <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-            {regionalData.map((reg, idx) => (
-              <div key={idx} style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "13px" }}>
-                  <span style={{ color: "var(--text-primary)", fontWeight: 700 }}>{reg.city}</span>
-                  <span style={{ color: "var(--text-secondary)" }}>
-                    {reg.opened} opened · <strong>{reg.replied} engaged</strong> ({reg.conversion}% open rate)
-                  </span>
+            {regionalData.length > 0 ? (
+              regionalData.map((reg, idx) => (
+                <div key={idx} style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "13px" }}>
+                    <span style={{ color: "var(--text-primary)", fontWeight: 700 }}>{reg.city}</span>
+                    <span style={{ color: "var(--text-secondary)" }}>
+                      {reg.opened} opened · <strong>{reg.replied} engaged</strong> ({reg.conversion}% open rate)
+                    </span>
+                  </div>
+                  <div style={{ height: "6px", background: "var(--bg-translucent-mild)", borderRadius: "3px", overflow: "hidden" }}>
+                    <div style={{
+                      width: `${reg.conversion}%`,
+                      height: "100%",
+                      background: "linear-gradient(90deg, var(--color-indigo), var(--color-lime))",
+                      borderRadius: "3px"
+                    }} />
+                  </div>
                 </div>
-                <div style={{ height: "6px", background: "var(--bg-translucent-mild)", borderRadius: "3px", overflow: "hidden" }}>
-                  <div style={{
-                    width: `${reg.conversion}%`,
-                    height: "100%",
-                    background: "linear-gradient(90deg, var(--color-indigo), var(--color-lime))",
-                    borderRadius: "3px"
-                  }} />
-                </div>
+              ))
+            ) : (
+              <div style={{ color: "var(--text-muted)", fontSize: "13px", padding: "40px 10px", textAlign: "center" }}>
+                No regional data available yet. Scrape leads in different cities to populate this map.
               </div>
-            ))}
+            )}
           </div>
         </div>
 
