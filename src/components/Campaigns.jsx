@@ -376,11 +376,11 @@ export default function Campaigns({
           - If Website Status is "no_website", pitch why a website helps capture local search traffic.
           - If Website Status is "down", offer to help fix or rebuild their broken site.
           - If Website Status is "active", suggest subtle improvements.
-      - Call to Action: Friendly offer for a 10-minute quick preview.
+      - Call to Action: Friendly, low-friction request. Do NOT ask for a call or meeting. Instead, ask for simple permission to show them something: "Mind if I send over a quick 30-second screenshot/preview showing how we fix this?" or "Would you be open to seeing a quick concept I put together for you?"
       - Signature: Use exactly this signature:
         Cheers,
         ${signature}
-      - Instructions: Keep it casual, brief, and highly compelling. Never sound like a spammy sales script. 
+      - Instructions: Keep it casual, brief (max 100-120 words), and highly compelling. Never sound like a spammy sales script. Reference their business directly in the very first sentence without generic greetings. No sales hype or buzzwords.
       - Format: Output ONLY the email. Start with a "Subject: " line on the first line, then a blank line, and then the email body. Use short lowercase click-worthy subject lines.
     `;
 

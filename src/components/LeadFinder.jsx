@@ -37,14 +37,15 @@ Tone: ${settings.outreachStyle || "casual"}, warm, direct.
 Bio context: ${settings.aboutText || "local developer helping businesses grow"}
 ${settings.workSamples ? `Work samples: ${settings.workSamples}` : ""}
 
-Rules:
-- Start with "Subject: " on line 1
+Rules & High-Converting Pitch Guidelines:
+- Start with "Subject: " on line 1 (Make it short, lowercase, and casual, e.g. "quick query" or "website feedback")
 - Then a blank line
-- Then the email body
-- Keep it under 180 words
-- Do NOT use placeholders or brackets like [your name]
-- End with your real name and role as signature
-- Be specific about WHY this business needs what you offer`;
+- Then the email body (Maximum 100-120 words. Use 3 short paragraphs of 1-2 sentences each).
+- First sentence hook: Reference their actual business directly. Never say "My name is" or "Hope you are doing well". Start with something like "Hey, I came across ${lead.name} on Google Maps..." or "Hey, I was looking at your rating (${lead.rating}⭐)..."
+- No sales hype or buzzwords. Keep it grounded, direct, and conversational.
+- Low-Friction Call-To-Action (CTA): Do NOT ask for a call or meeting. Instead, ask for simple permission to show them something: "Mind if I send over a quick 30-second screenshot/preview showing how we fix this?" or "Would you be open to seeing a quick concept I put together for you?"
+- Do NOT use placeholders or brackets.
+- End with your signature: Cheers, ${settings.senderName || "Developer"}`;
 
       const res = await fetch("/api/ai/generate", {
         method: "POST",
@@ -418,6 +419,12 @@ export default function LeadFinder({ leads, setLeads, settings, showToast }) {
       return saved ? JSON.parse(saved).pitchOffer : (settings.pitchOffer || "whatsapp_bot");
     } catch { return settings.pitchOffer || "whatsapp_bot"; }
   });
+  const [customOfferText, setCustomOfferText] = useState(() => {
+    try {
+      const saved = localStorage.getItem("syntek_scrape_config");
+      return saved ? JSON.parse(saved).customOfferText || "" : (settings.customOfferDetails || "");
+    } catch { return settings.customOfferDetails || ""; }
+  });
   const [searchMode, setSearchMode] = useState(() => {
     try {
       const saved = localStorage.getItem("syntek_scrape_config");
@@ -440,13 +447,14 @@ export default function LeadFinder({ leads, setLeads, settings, showToast }) {
         limit,
         reqContact,
         pitchOffer,
+        customOfferText,
         searchMode,
         strictFilter
       }));
     } catch (e) {
       console.error("Failed to save scrape config:", e);
     }
-  }, [niche, locations, limit, reqContact, pitchOffer, searchMode, strictFilter]);
+  }, [niche, locations, limit, reqContact, pitchOffer, customOfferText, searchMode, strictFilter]);
 
   /* UI state */
   const [searching, setSearching]       = useState(false);
@@ -480,14 +488,18 @@ export default function LeadFinder({ leads, setLeads, settings, showToast }) {
   useEffect(() => {
     try {
       const saved = localStorage.getItem("syntek_scrape_config");
-      if (!saved) {
-        setNiche(settings.niche || "Cafes & Brunch");
-        setLocations([settings.location || "Austin, TX"]);
-        setLimit(settings.dailyLeadLimit || 10);
-        setReqContact(settings.requiredContact || "email_or_phone");
-        setPitchOffer(settings.pitchOffer || "whatsapp_bot");
-        setSearchMode(settings.searchMode || "deepsearch");
-        setStrictFilter(true);
+      if (!saved && settings) {
+        if (settings.niche) setNiche(settings.niche);
+        if (settings.location) setLocations([settings.location]);
+        if (settings.dailyLeadLimit) setLimit(settings.dailyLeadLimit);
+        if (settings.requiredContact) setReqContact(settings.requiredContact);
+        if (settings.pitchOffer) setPitchOffer(settings.pitchOffer);
+        if (settings.customOfferDetails) setCustomOfferText(settings.customOfferDetails);
+        if (settings.searchMode) setSearchMode(settings.searchMode);
+      } else if (settings) {
+        // If settings explicitly changed (e.g. initial load from backend), sync pitch settings
+        if (settings.pitchOffer) setPitchOffer(settings.pitchOffer);
+        if (settings.customOfferDetails) setCustomOfferText(settings.customOfferDetails);
       }
     } catch { /* fallback */ }
   }, [settings]);
@@ -652,7 +664,7 @@ export default function LeadFinder({ leads, setLeads, settings, showToast }) {
             niche,
             location: loc,
             limit: Math.ceil(limit / locations.length),
-            pitchOffer,
+            pitchOffer: pitchOffer === "custom" ? customOfferText : pitchOffer,
             requiredContact: reqContact,
             strictFilter,
           }),
@@ -771,7 +783,7 @@ export default function LeadFinder({ leads, setLeads, settings, showToast }) {
     let sent = 0;
     for (const lead of targets) {
       try {
-        const pitchLabel = { whatsapp_bot: "WhatsApp booking bot", website_dev: "website design", ai_chatbot: "AI chatbot", custom: settings.customOfferDetails }[settings.pitchOffer] || settings.pitchOffer;
+        const pitchLabel = pitchOffer === "custom" ? customOfferText : ({ whatsapp_bot: "WhatsApp booking bot", website_dev: "website design", ai_chatbot: "AI chatbot" }[pitchOffer] || pitchOffer);
         const prompt = `Write a short personalized cold email from ${settings.senderName || "a developer"} to ${lead.name} (${lead.type} in ${lead.city}, ${lead.rating}⭐). Pitch: ${pitchLabel}. Website status: ${lead.website_status || "unknown"}. Keep it under 120 words. Format: Subject: [subject]\n\n[body]`;
         const aiRes = await fetch("/api/ai/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt }), signal: AbortSignal.timeout(35000) });
         if (!aiRes.ok) continue;
@@ -868,6 +880,18 @@ export default function LeadFinder({ leads, setLeads, settings, showToast }) {
             <option value="custom">Custom Offer</option>
           </select>
         </div>
+
+        {pitchOffer === "custom" && (
+          <div className="input-group" style={{ marginTop: 8 }}>
+            <label className="input-label">Custom Offer Details</label>
+            <input
+              className="input input-sm"
+              placeholder="e.g. SEO optimization, mobile app..."
+              value={customOfferText}
+              onChange={e => setCustomOfferText(e.target.value)}
+            />
+          </div>
+        )}
 
         {/* Search mode */}
         <div className="input-group">

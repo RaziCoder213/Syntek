@@ -241,7 +241,11 @@ export default function Pipeline({ leads, setLeads, settings, showToast }) {
   const [chatMessages, setChatMessages] = useState([]);
   const [inputText, setInputText] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
+  const [editingMsgId, setEditingMsgId] = useState(null);
+  const [editingText, setEditingText] = useState("");
   const messagesEndRef = useRef(null);
+  const abortCtrlRef = useRef(null);
+  const inputRef = useRef(null);
 
   const fetchChatHistory = async (leadId) => {
     try {
@@ -267,25 +271,38 @@ export default function Pipeline({ leads, setLeads, settings, showToast }) {
     }
   }, [chatMessages, chatLoading]);
 
-  const handleSendMessage = async (e) => {
-    e.preventDefault();
-    if (!inputText.trim() || chatLoading || !drawerLead) return;
+  const handleStopChat = () => {
+    if (abortCtrlRef.current) {
+      abortCtrlRef.current.abort();
+      abortCtrlRef.current = null;
+    }
+    setChatLoading(false);
+    showToast("Generation stopped.", "info");
+  };
 
-    const userMsg = inputText.trim();
-    setInputText("");
+  const handleSendMessage = async (e, textToSend = null) => {
+    if (e) e.preventDefault();
+    const text = (textToSend !== null ? textToSend : inputText).trim();
+    if (!text || chatLoading || !drawerLead) return;
+
+    if (textToSend === null) setInputText("");
     
-    setChatMessages(prev => [...prev, { role: "user", content: userMsg }]);
+    // Assign a temp ID if none exists for rendering/editing purposes
+    setChatMessages(prev => [...prev, { id: Date.now(), role: "user", content: text }]);
     setChatLoading(true);
+
+    abortCtrlRef.current = new AbortController();
 
     try {
       const res = await fetch(`/api/leads/${drawerLead.id}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: userMsg })
+        body: JSON.stringify({ message: text }),
+        signal: abortCtrlRef.current.signal
       });
       if (res.ok) {
         const data = await res.json();
-        setChatMessages(prev => [...prev, { role: "assistant", content: data.reply }]);
+        setChatMessages(prev => [...prev, { id: Date.now() + 1, role: "assistant", content: data.reply }]);
         
         if (data.action && data.actionResult) {
           showToast(`AI executed: ${data.action}`, "success");
@@ -303,15 +320,41 @@ export default function Pipeline({ leads, setLeads, settings, showToast }) {
             setDrawerLead(prev => ({ ...prev, status: "contacted", pipeline_stage: "Contacted" }));
           }
         }
-      } else {
+      } else if (res.status !== 0) {
         showToast("Error getting AI response", "danger");
       }
     } catch (err) {
-      console.error(err);
-      showToast("Network error occurred", "danger");
+      if (err.name !== "AbortError") {
+        console.error(err);
+        showToast("Network error occurred", "danger");
+      }
     } finally {
       setChatLoading(false);
+      abortCtrlRef.current = null;
     }
+  };
+
+  const startEditChatMessage = (msg) => {
+    setEditingMsgId(msg.id || msg.created_at || Math.random());
+    setEditingText(msg.content);
+    setTimeout(() => inputRef.current?.focus(), 50);
+  };
+
+  const submitEditChatMessage = async () => {
+    if (!editingText.trim()) return;
+    setChatMessages(prev => {
+      const idx = prev.findIndex(m => (m.id === editingMsgId || m.created_at === editingMsgId));
+      return idx >= 0 ? prev.slice(0, idx) : prev;
+    });
+    const text = editingText.trim();
+    setEditingMsgId(null);
+    setEditingText("");
+    await handleSendMessage(null, text);
+  };
+
+  const cancelEditChatMessage = () => {
+    setEditingMsgId(null);
+    setEditingText("");
   };
 
   /* Group leads into stages */
@@ -454,18 +497,20 @@ export default function Pipeline({ leads, setLeads, settings, showToast }) {
             </div>
           </div>
         ) : (
-          <div>
-            <div className="section-title">Pipeline</div>
-            <div className="section-desc">{leads.length} leads across {stages.length} stages</div>
-          </div>
-          <button
-            className="btn btn-ghost"
-            style={{ fontSize: 12, padding: "4px 12px", border: "1px dashed var(--border-1)", borderRadius: "var(--radius-sm)", color: "var(--text-3)", cursor: "pointer", marginLeft: 8 }}
-            onClick={addStage}
-            title="Add a new pipeline stage"
-          >
-            + Add Stage
-          </button>
+          <>
+            <div>
+              <div className="section-title">Pipeline</div>
+              <div className="section-desc">{leads.length} leads across {stages.length} stages</div>
+            </div>
+            <button
+              className="btn btn-ghost"
+              style={{ fontSize: 12, padding: "4px 12px", border: "1px dashed var(--border-1)", borderRadius: "var(--radius-sm)", color: "var(--text-3)", cursor: "pointer", marginLeft: 8 }}
+              onClick={addStage}
+              title="Add a new pipeline stage"
+            >
+              + Add Stage
+            </button>
+          </>
         )}
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           {selectedLeads.length === 0 && leads.length > 0 && (
@@ -876,32 +921,64 @@ export default function Pipeline({ leads, setLeads, settings, showToast }) {
                         >
                           {formatChatMessage(msg.content)}
                         </div>
-                        <span style={{ fontSize: 9, color: "var(--text-4)", marginTop: 2 }}>
-                          {msg.role === "user" ? "You" : "AI Assistant"}
-                        </span>
+                        <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 2 }}>
+                          <span style={{ fontSize: 9, color: "var(--text-4)" }}>
+                            {msg.role === "user" ? "You" : "AI Assistant"}
+                          </span>
+                          {msg.role === "user" && !chatLoading && (
+                            <button
+                              type="button"
+                              onClick={() => startEditChatMessage(msg)}
+                              style={{ background: "none", border: "none", color: "var(--text-4)", fontSize: 10, cursor: "pointer", padding: 0 }}
+                              title="Edit and resend"
+                            >
+                              ✏️ Edit
+                            </button>
+                          )}
+                        </div>
                       </div>
                     ))
                   )}
                   {chatLoading && (
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--text-3)", fontSize: 12, padding: "8px 0" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", color: "var(--text-3)", fontSize: 12, padding: "8px 0" }}>
                       <span className="spinner-dots" style={{ fontWeight: "bold" }}>AI Assistant is thinking...</span>
+                      <button
+                        type="button"
+                        onClick={handleStopChat}
+                        style={{ background: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.4)", color: "#f87171", fontSize: 10, cursor: "pointer", padding: "2px 8px", borderRadius: 4, fontWeight: 600 }}
+                      >
+                        ⏹ Stop
+                      </button>
                     </div>
                   )}
                   <div ref={messagesEndRef} />
                 </div>
 
+                {/* Edit Mode Banner */}
+                {editingMsgId && (
+                  <div style={{ padding: "6px 12px", background: "rgba(108,92,231,0.1)", borderTop: "1px solid rgba(108,92,231,0.25)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                    <span style={{ fontSize: 10, color: "var(--brand)", fontWeight: 600 }}>✏️ Editing message...</span>
+                    <button type="button" onClick={cancelEditChatMessage} style={{ background: "none", border: "none", color: "var(--text-3)", fontSize: 10, cursor: "pointer" }}>Cancel</button>
+                  </div>
+                )}
+
                 {/* Chat input box */}
                 <form 
-                  onSubmit={handleSendMessage} 
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (editingMsgId) submitEditChatMessage();
+                    else handleSendMessage(e);
+                  }}
                   style={{
                     padding: 12, borderTop: "1px solid var(--border-1)", display: "flex", gap: 8,
-                    background: "var(--bg-card)"
+                    background: "var(--bg-card)", alignItems: "center"
                   }}
                 >
                   <input
-                    placeholder="Ask AI or give command..."
-                    value={inputText}
-                    onChange={e => setInputText(e.target.value)}
+                    ref={inputRef}
+                    placeholder={editingMsgId ? "Edit your message..." : "Ask AI or give command..."}
+                    value={editingMsgId ? editingText : inputText}
+                    onChange={e => editingMsgId ? setEditingText(e.target.value) : setInputText(e.target.value)}
                     disabled={chatLoading}
                     style={{
                       flex: 1, padding: "8px 12px", fontSize: 12.5, borderRadius: 6,
@@ -909,14 +986,25 @@ export default function Pipeline({ leads, setLeads, settings, showToast }) {
                       color: "var(--text-1)", outline: "none"
                     }}
                   />
-                  <button 
-                    type="submit" 
-                    className="btn btn-primary btn-sm" 
-                    disabled={chatLoading || !inputText.trim()}
-                    style={{ padding: "0 14px", height: "auto" }}
-                  >
-                    Send
-                  </button>
+                  {chatLoading ? (
+                    <button 
+                      type="button" 
+                      onClick={handleStopChat}
+                      className="btn btn-danger btn-sm"
+                      style={{ padding: "0 14px", height: "34px", whiteSpace: "nowrap" }}
+                    >
+                      ⏹ Stop
+                    </button>
+                  ) : (
+                    <button 
+                      type="submit" 
+                      className="btn btn-primary btn-sm" 
+                      disabled={editingMsgId ? !editingText.trim() : !inputText.trim()}
+                      style={{ padding: "0 14px", height: "34px", whiteSpace: "nowrap" }}
+                    >
+                      {editingMsgId ? "✓ Save" : "Send"}
+                    </button>
+                  )}
                 </form>
               </div>
             )}
