@@ -12,6 +12,12 @@ import { spawn } from "child_process";
 
 dotenv.config();
 
+// Append Antigravity CLI path to process.env.PATH
+if (process.env.USERPROFILE) {
+  const agyBinPath = path.join(process.env.USERPROFILE, "AppData", "Local", "agy", "bin");
+  process.env.PATH = `${agyBinPath}${path.delimiter}${process.env.PATH}`;
+}
+
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1226,7 +1232,7 @@ app.get("/api/leads", authenticate, async (req, res) => {
 app.get("/api/scan/status/:id", authenticate, async (req, res) => {
   try {
     const scanRes = await pool.query(
-      "SELECT status, progress, logs, error FROM scans WHERE id = $1 AND user_id = $2",
+      "SELECT status, progress, logs, error, created_at FROM scans WHERE id = $1 AND user_id = $2",
       [req.params.id, req.userId]
     );
     if (scanRes.rowCount === 0) {
@@ -1237,7 +1243,8 @@ app.get("/api/scan/status/:id", authenticate, async (req, res) => {
       status: scan.status,
       progress: parseFloat(scan.progress),
       logs: scan.logs,
-      error: scan.error
+      error: scan.error,
+      created_at: scan.created_at
     });
   } catch (err) {
     console.error(`[STATUS API ERROR] Failed to query scan status for scan ${req.params.id}:`, err.message);
@@ -1273,7 +1280,7 @@ app.post("/api/scan/stop/:id", authenticate, async (req, res) => {
 app.get("/api/scan/active", authenticate, async (req, res) => {
   try {
     const activeScan = await pool.query(
-      "SELECT id, status, progress, logs, error FROM scans WHERE user_id = $1 AND status = 'running' ORDER BY id DESC LIMIT 1",
+      "SELECT id, status, progress, logs, error, created_at FROM scans WHERE user_id = $1 AND status = 'running' ORDER BY id DESC LIMIT 1",
       [req.userId]
     );
     if (activeScan.rowCount === 0) {
@@ -1286,7 +1293,8 @@ app.get("/api/scan/active", authenticate, async (req, res) => {
       status: scan.status,
       progress: parseFloat(scan.progress) || 0,
       logs: scan.logs,
-      error: scan.error
+      error: scan.error,
+      created_at: scan.created_at
     });
   } catch (err) {
     console.error("[ACTIVE SCAN API ERROR]", err.message);
@@ -1373,7 +1381,7 @@ app.put("/api/leads/bulk-status", authenticate, async (req, res) => {
   }
   try {
     await pool.query(
-      "UPDATE leads SET status = $1, pipeline_stage = $2 WHERE id = ANY($3) AND user_id = $4",
+      "UPDATE leads SET status = COALESCE($1, status), pipeline_stage = $2 WHERE id = ANY($3) AND user_id = $4",
       [status, pipeline_stage, leadIds, req.userId]
     );
     res.json({ success: true, message: `Successfully updated ${leadIds.length} leads.` });
@@ -1841,6 +1849,16 @@ app.post("/api/ai/copilot", authenticate, async (req, res) => {
       recentLeadsText += `- ID: ${l.id}, Name: ${l.name}, Email: ${l.email || "None"}, Stage: ${l.pipeline_stage || "New"}, Status: ${l.status}\n`;
     }
 
+    const activeScanRes = await pool.query(
+      "SELECT id, status, progress, error, created_at FROM scans WHERE user_id = $1 ORDER BY id DESC LIMIT 1",
+      [req.userId]
+    );
+    let scanStatusText = "No scans run yet.";
+    if (activeScanRes.rowCount > 0) {
+      const scan = activeScanRes.rows[0];
+      scanStatusText = `ID: ${scan.id}, Status: ${scan.status}, Progress: ${scan.progress}%, Created At: ${scan.created_at}${scan.error ? `, Error: ${scan.error}` : ""}`;
+    }
+
     const defaultStages = ["New", "Re-research", "Researched", "Drafted", "Contacted", "Follow Up", "Opened", "Replied", "Won", "Archived"];
     const stages = config.kanban_stages || defaultStages;
 
@@ -1874,6 +1892,8 @@ Available Action Commands:
 9. { "action": "RUN_AUTOMATION" }
 10. { "action": "UPDATE_SETTINGS", "niche": "<niche (optional)>", "location": "<location (optional)>", "daily_lead_limit": <number (optional)> }
 11. { "action": "BULK_RE_RESEARCH" } (moves all leads without an email or in 'no_email' status to 'Re-research' stage and queues background AI email scraper agent)
+12. { "action": "DUPLICATE_LEADS_WITH_LINKEDIN", "stage": "<New Stage Name>" } (finds all leads that have a LinkedIn profile, ensures the new stage exists, duplicates them, and saves the duplicates in the new stage)
+
 
 Here is the current platform status:
 - Total Leads count: ${leadsCount}
@@ -1883,6 +1903,7 @@ Here is the current platform status:
 - Daily Lead Limit: ${config.daily_lead_limit || 8}
 - Gmail User: ${config.gmail_user || "Not Connected"}
 - Kanban Stages: ${JSON.stringify(stages)}
+- Active / Recent Scan Status: ${scanStatusText}
 
 Recent leads (up to 5):
 ${recentLeadsText}
@@ -2065,6 +2086,10 @@ Answer the user's message clearly, inform them of any actions you are queueing, 
               "UPDATE leads SET pipeline_stage = 'Re-research', status = 'no_email', email = '', re_research_attempts = 0 WHERE id = $1",
               [lead.id]
             );
+            await pool.query(
+              "UPDATE campaign_settings SET re_research_enabled = TRUE WHERE user_id = $1",
+              [req.userId]
+            );
             const pendingJob = await pool.query(
               "SELECT id FROM job_queue WHERE user_id = $1 AND job_type = 're_research' AND status = 'pending'",
               [req.userId]
@@ -2075,14 +2100,14 @@ Answer the user's message clearly, inform them of any actions you are queueing, 
                 [req.userId]
               );
             }
-            actionResults.push({ success: true, message: `Initiated re-research for lead "${lead.name}"` });
+            actionResults.push({ success: true, message: `Initiated re-research for lead "${lead.name}" and enabled re-research agent.` });
           } else {
             actionResults.push({ success: false, error: `Lead "${act.leadName}" not found for re-research` });
           }
         }
 
         else if (act.action === "BULK_RE_RESEARCH") {
-          // 1. Ensure Re-research stage exists
+          // 1. Ensure Re-research and Manual Research by Boss stages exist
           if (!stages.includes("Re-research")) {
             const newStages = [...stages, "Re-research"];
             await pool.query(
@@ -2090,8 +2115,26 @@ Answer the user's message clearly, inform them of any actions you are queueing, 
               [newStages, req.userId]
             );
           }
+          if (!stages.includes("Manual Research by Boss")) {
+            // Refetch stages to make sure we don't overwrite the previous update
+            const freshConfig = await pool.query("SELECT kanban_stages FROM campaign_settings WHERE user_id = $1", [req.userId]);
+            const currentStages = freshConfig.rows[0]?.kanban_stages || stages;
+            if (!currentStages.includes("Manual Research by Boss")) {
+              const newStages = [...currentStages, "Manual Research by Boss"];
+              await pool.query(
+                "UPDATE campaign_settings SET kanban_stages = $1 WHERE user_id = $2",
+                [newStages, req.userId]
+              );
+            }
+          }
 
-          // 2. Move all leads without email to Re-research stage
+          // 2. Enable re-research agent setting
+          await pool.query(
+            "UPDATE campaign_settings SET re_research_enabled = TRUE WHERE user_id = $1",
+            [req.userId]
+          );
+
+          // 3. Move all leads without email to Re-research stage
           const updateRes = await pool.query(
             `UPDATE leads 
              SET pipeline_stage = 'Re-research', 
@@ -2101,7 +2144,7 @@ Answer the user's message clearly, inform them of any actions you are queueing, 
             [req.userId]
           );
 
-          // 3. Queue a re_research job if none pending
+          // 4. Queue a re_research job if none pending
           const pendingJob = await pool.query(
             "SELECT id FROM job_queue WHERE user_id = $1 AND job_type = 're_research' AND status = 'pending'",
             [req.userId]
@@ -2115,7 +2158,57 @@ Answer the user's message clearly, inform them of any actions you are queueing, 
 
           actionResults.push({ 
             success: true, 
-            message: `Moved ${updateRes.rowCount} leads with no email to "Re-research" stage and queued background research job.` 
+            message: `Moved ${updateRes.rowCount} leads with no email to "Re-research" stage, enabled re-research agent, and queued background research job.` 
+          });
+        }
+
+        else if (act.action === "DUPLICATE_LEADS_WITH_LINKEDIN") {
+          const targetStage = act.stage || "Leads with LinkedIn Profiles";
+          
+          // 1. Ensure target stage exists
+          const freshConfig = await pool.query("SELECT kanban_stages FROM campaign_settings WHERE user_id = $1", [req.userId]);
+          const currentStages = freshConfig.rows[0]?.kanban_stages || stages;
+          if (!currentStages.includes(targetStage)) {
+            const newStages = [...currentStages, targetStage];
+            await pool.query(
+              "UPDATE campaign_settings SET kanban_stages = $1 WHERE user_id = $2",
+              [newStages, req.userId]
+            );
+          }
+          
+          // 2. Query all leads with LinkedIn
+          const linkedinLeads = await pool.query(
+            "SELECT * FROM leads WHERE user_id = $1 AND linkedin IS NOT NULL AND linkedin != '' AND linkedin != 'null'",
+            [req.userId]
+          );
+          
+          let dupCount = 0;
+          for (const lead of linkedinLeads.rows) {
+            // Check duplicate in targetStage
+            const existingDup = await pool.query(
+              "SELECT id FROM leads WHERE user_id = $1 AND name = $2 AND pipeline_stage = $3 LIMIT 1",
+              [req.userId, lead.name, targetStage]
+            );
+            if (existingDup.rowCount === 0) {
+              await pool.query(
+                `INSERT INTO leads (
+                  name, type, city, email, phone, rating, reviews, status, instagram, user_id, 
+                  website, website_status, linkedin, facebook, whatsapp, twitter, owner_name, 
+                  owner_role, owner_contact, qualification_reason, pipeline_stage, personalized_icebreaker
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`,
+                [
+                  lead.name, lead.type, lead.city, lead.email, lead.phone, lead.rating, lead.reviews, lead.status, lead.instagram, req.userId,
+                  lead.website, lead.website_status, lead.linkedin, lead.facebook, lead.whatsapp, lead.twitter, lead.owner_name,
+                  lead.owner_role, lead.owner_contact, lead.qualification_reason, targetStage, lead.personalized_icebreaker
+                ]
+              );
+              dupCount++;
+            }
+          }
+          
+          actionResults.push({
+            success: true,
+            message: `Created stage "${targetStage}" and duplicated ${dupCount} leads with LinkedIn profiles into it.`
           });
         }
 
@@ -2138,14 +2231,21 @@ Answer the user's message clearly, inform them of any actions you are queueing, 
         }
 
         else if (act.action === "UPDATE_SETTINGS") {
-          const { niche, location, daily_lead_limit } = act;
+          const { niche, location, daily_lead_limit, outreach_style } = act;
           await pool.query(
             `UPDATE campaign_settings SET 
               niche = COALESCE($1, niche),
               location = COALESCE($2, location),
-              daily_lead_limit = COALESCE($3, daily_lead_limit)
-             WHERE user_id = $4`,
-            [niche === undefined ? null : niche, location === undefined ? null : location, daily_lead_limit === undefined ? null : daily_lead_limit, req.userId]
+              daily_lead_limit = COALESCE($3, daily_lead_limit),
+              outreach_style = COALESCE($4, outreach_style)
+             WHERE user_id = $5`,
+            [
+              niche === undefined ? null : niche, 
+              location === undefined ? null : location, 
+              daily_lead_limit === undefined ? null : daily_lead_limit, 
+              outreach_style === undefined ? null : outreach_style,
+              req.userId
+            ]
           );
           actionResults.push({ success: true, message: "Settings updated successfully" });
         }
@@ -4374,7 +4474,7 @@ app.post("/api/scan", authenticate, scanRateLimit, async (req, res) => {
     addLog("info", `[SEARCHER AGENT] Initiating scraper scanning loop up to the limit of ${limit} leads...`);
 
     let attempts = 0;
-    const maxAttempts = 10;
+    const maxAttempts = Math.max(50, Math.ceil(limit / 2) * 5);
 
     while (processedLeads.length < limit && attempts < maxAttempts) {
       const scanStatusCheck = await pool.query("SELECT status FROM scans WHERE id = $1", [scanId]);
@@ -4383,7 +4483,7 @@ app.post("/api/scan", authenticate, scanRateLimit, async (req, res) => {
         break;
       }
 
-      if (Date.now() - startTime > 900000) {
+      if (Date.now() - startTime > 2700000) {
         addLog("info", `[SEARCHER AGENT] Approaching overall request timeout limit (${Math.round((Date.now() - startTime)/1000)}s elapsed). Syncing current leads and concluding early.`);
         break;
       }
@@ -4396,7 +4496,7 @@ app.post("/api/scan", authenticate, scanRateLimit, async (req, res) => {
 Find exactly ${currentBatchLimit} real, active local businesses matching this target:
 - Niche: ${niche}
 - Location: ${location}
-${processedLeads.length > 0 ? `Please avoid duplicates of the following businesses: ${Array.from(seenNames).slice(0, 40).join(", ")}` : ""}
+${seenNames.size > 0 ? `Please avoid duplicates of the following businesses: ${Array.from(seenNames).slice(0, 500).join(", ")}` : ""}
 ${targetingInstructions}
 ${contactConstraintInstructions}
 
@@ -4810,7 +4910,7 @@ app.post("/api/scan-deepsearch", authenticate, scanRateLimit, async (req, res) =
     addLog("info", `[SEARCHER AGENT] Initiating DeepSearch AI scanning loop up to the limit of ${limit} leads...`);
 
     let attempts = 0;
-    const maxAttempts = 10;
+    const maxAttempts = Math.max(50, Math.ceil(limit / 2) * 5);
 
     while (processedLeads.length < limit && attempts < maxAttempts) {
       const scanStatusCheck = await pool.query("SELECT status FROM scans WHERE id = $1", [scanId]);
@@ -4819,7 +4919,7 @@ app.post("/api/scan-deepsearch", authenticate, scanRateLimit, async (req, res) =
         break;
       }
 
-      if (Date.now() - startTime > 900000) {
+      if (Date.now() - startTime > 2700000) {
         addLog("info", `[SEARCHER AGENT] Approaching overall request timeout limit (${Math.round((Date.now() - startTime)/1000)}s elapsed). Syncing current leads and concluding early.`);
         break;
       }
@@ -4832,7 +4932,7 @@ app.post("/api/scan-deepsearch", authenticate, scanRateLimit, async (req, res) =
 Find exactly ${currentBatchLimit} real, active local businesses matching this target:
 - Niche: ${niche}
 - Location: ${location}
-${processedLeads.length > 0 ? `Please avoid duplicates of the following businesses: ${Array.from(seenNames).slice(0, 40).join(", ")}` : ""}
+${seenNames.size > 0 ? `Please avoid duplicates of the following businesses: ${Array.from(seenNames).slice(0, 500).join(", ")}` : ""}
 ${targetingInstructions}
 ${contactConstraintInstructions}
 
@@ -5139,11 +5239,19 @@ Format example:
 
   } catch (err) {
     console.error("DeepSearch process failed:", err);
-    await handleGeminiError(req.userId, err, "Manual DeepSearch Scan");
-    await pool.query(
-      "UPDATE scans SET status = 'failed', error = $1 WHERE id = $2",
-      [err.message, scanId]
-    );
+    try {
+      await handleGeminiError(req.userId, err, "Manual DeepSearch Scan");
+    } catch (e) {
+      console.error("Failed to report Gemini error:", e.message);
+    }
+    try {
+      await pool.query(
+        "UPDATE scans SET status = 'failed', error = $1 WHERE id = $2",
+        [err.message, scanId]
+      );
+    } catch (e) {
+      console.error("Failed to update scan status to failed:", e.message);
+    }
   }
   });
 });
@@ -5341,7 +5449,7 @@ async function performDeepSearchDirect(niche, location, apiKey, limit = 8, confi
   const processedLeads = [];
   const seenNames = new Set();
   let attempts = 0;
-  const maxAttempts = 10;
+  const maxAttempts = Math.max(50, Math.ceil(maxLimit / 2) * 5);
 
   while (processedLeads.length < maxLimit && attempts < maxAttempts) {
     attempts++;
@@ -5352,7 +5460,7 @@ async function performDeepSearchDirect(niche, location, apiKey, limit = 8, confi
 Find exactly ${currentBatchLimit} real, active local businesses matching this target:
 - Niche: ${niche}
 - Location: ${location}
-${processedLeads.length > 0 ? `Please avoid duplicates of the following businesses: ${Array.from(seenNames).slice(0, 40).join(", ")}` : ""}
+${seenNames.size > 0 ? `Please avoid duplicates of the following businesses: ${Array.from(seenNames).slice(0, 500).join(", ")}` : ""}
 ${targetingInstructions}
 ${contactConstraintInstructions}
 
@@ -5583,6 +5691,22 @@ async function generateDeveloperOutreach(lead, config) {
       const style = config.outreach_style || "casual";
       let styleGuidelines = "";
       
+      const stylesToolkit = `
+        OUTREACH STYLES TOOLBOX (You can dynamically adapt or choose elements from these styles to write the best email, but prioritize the selected style "${style}"):
+        1. ROI-Focused ("roi"): Emphasize saving 2-3 hours of staff time daily, capturing lost leads, and conversion.
+        2. Opinions/Feedback ("feedback"): Start with Google Rating/Reviews, suggest friendly, constructive optimization.
+        3. Pre-built Demo Showcase ("direct"): Directly pitch that you have a custom prototype built for them.
+        4. Collaboration/Partnership ("collaboration"): A template that starts by pitching collaboration:
+           "Hi [First Name / Owner Name],
+           I was checking out [Business Name] and what you're doing in [Niche/Industry] – a few ideas around a potential collaboration came to mind.
+           We've been helping teams in [Industry] tackle [specific problem], and recently partnered with [previous clients/partners/work samples] – together we managed to [achieve result/metric].
+           I feel there might be a cool angle for us to collaborate.
+           If you're open to it, I'd be happy to jump on a short Google Meet and talk it through. I'm free on Tuesday or Wednesday, let me know!
+           Best,
+           [Signature]"
+        5. Casual & Warm ("casual"): Very friendly, conversational, low-friction helper pitch.
+      `;
+
       if (style === "roi") {
         styleGuidelines = `
         - Pitch Angle: ROI-focused. Emphasize saving 2-3 hours of staff time daily, never missing booking messages, and improving conversion rates of chat visitors into paying customers. Mention financial benefits and call automation.`;
@@ -5592,6 +5716,9 @@ async function generateDeveloperOutreach(lead, config) {
       } else if (style === "direct") {
         styleGuidelines = `
         - Pitch Angle: Pre-built Demo Showcase. Pitch directly that you've put together a quick, pre-built custom AI chat booking assistant prototype specifically customized for ${lead.name} to demonstrate how it handles instant reservations.`;
+      } else if (style === "collaboration") {
+        styleGuidelines = `
+        - Pitch Angle: Collaboration & Partnership. Use a structure modeled after the "collaboration" style in the toolbox. Make it feel authentic, mentioning the specific industry and problem you solve, and proposing a collaboration check.`;
       } else {
         const pitchIdentity = (useCompany && companyName) ? `${senderRole} from ${companyName}` : senderRole;
         styleGuidelines = `
@@ -5646,6 +5773,7 @@ async function generateDeveloperOutreach(lead, config) {
             - If Website Status is "active", write that you checked their website, and suggest specific subtle improvements (e.g. mobile optimizations, fast page loading, cleaner layout).
           - If Core Pitch Offer is WhatsApp Booking Bot or AI Chatbot, highlight how their customers can book appointments or get instant support via chat DMs 24/7.
           - If Core Pitch Offer is a custom service, analyze the custom service details and identify the key pain point it solves for a business of this category (${lead.type}). Address how this business specifically (${lead.name}) can benefit from it, referencing their Google metrics or website presence to personalize the pitch.
+        ${stylesToolkit}
         ${styleGuidelines}
         - Signature: Use exactly this:
           Cheers,
@@ -6743,6 +6871,20 @@ Do not output any other explanations, formatting, markdown, or conversational te
         );
       } else {
         console.log(`[RE-RESEARCH FAILED] Could not find email for lead "${lead.name}" (ID ${lead.id}). Model replied: ${resText}`);
+        await pool.query(
+          `UPDATE leads 
+           SET pipeline_stage = 'Manual Research by Boss', 
+               status = 'no_email'
+           WHERE id = $1`,
+          [lead.id]
+        );
+        console.log(`[RE-RESEARCH MOVED] Lead "${lead.name}" (ID ${lead.id}) moved to Manual Research by Boss because email could not be found.`);
+        
+        await pool.query(
+          `INSERT INTO notifications (user_id, title, message, type, link)
+           VALUES ($1, $2, $3, 'system', 'Pipeline')`,
+          [userId, `🔍 Manual Research Required: ${lead.name}`, `AI research agent could not find an email. Lead moved to Manual Research by Boss.`]
+        );
       }
     } catch (err) {
       console.error(`[RE-RESEARCH ERROR] Failed for lead "${lead.name}" (ID ${lead.id}):`, err.message);
