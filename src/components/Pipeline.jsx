@@ -128,7 +128,7 @@ export default function Pipeline({ leads, setLeads, settings, showToast }) {
       "Won":          "won",
       "Archived":     "archived",
     };
-    const newStatus = statusMap[targetStage] || "not contacted";
+    const newStatus = statusMap[targetStage] || null;
 
     try {
       const res = await fetch("/api/leads/bulk-status", {
@@ -138,7 +138,7 @@ export default function Pipeline({ leads, setLeads, settings, showToast }) {
       });
       if (res.ok) {
         setLeads(prev => prev.map(l =>
-          selectedLeads.includes(l.id) ? { ...l, status: newStatus, pipeline_stage: targetStage } : l
+          selectedLeads.includes(l.id) ? { ...l, status: newStatus || l.status, pipeline_stage: targetStage } : l
         ));
         showToast(`Successfully moved ${selectedLeads.length} leads to ${targetStage}`, "success");
         setSelectedLeads([]);
@@ -284,7 +284,9 @@ export default function Pipeline({ leads, setLeads, settings, showToast }) {
 
   const onDrop = async (e, targetStage) => {
     e.preventDefault();
-    if (!dragging || getStageFromStatus(dragging.status) === targetStage) return;
+    if (!dragging) return;
+    const currentStage = dragging.pipeline_stage || getStageFromStatus(dragging.status);
+    if (currentStage === targetStage) return;
 
     const statusMap = {
       "New":          "not contacted",
@@ -298,7 +300,7 @@ export default function Pipeline({ leads, setLeads, settings, showToast }) {
       "Won":          "won",
       "Archived":     "archived",
     };
-    const newStatus = statusMap[targetStage] || "not contacted";
+    const newStatus = statusMap[targetStage] || dragging.status || "not contacted";
 
     try {
       await fetch(`/api/leads/${dragging.id}/status`, {
@@ -395,12 +397,12 @@ export default function Pipeline({ leads, setLeads, settings, showToast }) {
 
       {/* Kanban board */}
       <div className="kanban-board" style={{ flex: 1 }}>
-        {stages.map(stage => {
+        {stages.map((stage, idx) => {
           const cards = filteredGrouped[stage] || [];
           const color = STAGE_COLORS[stage] || "var(--text-3)";
           return (
             <div
-              key={stage}
+              key={`${stage}-${idx}`}
               className="kanban-col"
               onDragOver={e => onDragOver(e, stage)}
               onDrop={e => onDrop(e, stage)}
@@ -635,13 +637,13 @@ export default function Pipeline({ leads, setLeads, settings, showToast }) {
                 <div>
                   <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--text-4)", marginBottom: 8 }}>Move to Stage</div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                    {stages.map(s => (
+                    {stages.map((s, idx) => (
                       <button
-                        key={s}
+                        key={`${s}-${idx}`}
                         className={`btn btn-sm ${(drawerLead.pipeline_stage || getStageFromStatus(drawerLead.status)) === s ? "btn-primary" : "btn-secondary"}`}
                         onClick={async () => {
                           const statusMap = { "New": "not contacted", "Researched": "researched", "Drafted": "drafted", "Contacted": "contacted", "Opened": "opened", "Replied": "replied", "Won": "won", "Archived": "archived" };
-                          const newStatus = statusMap[s] || "not contacted";
+                          const newStatus = statusMap[s] || drawerLead.status || "not contacted";
                           await fetch(`/api/leads/${drawerLead.id}/status`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: newStatus, pipeline_stage: s }) });
                           setLeads(prev => prev.map(l => l.id === drawerLead.id ? { ...l, status: newStatus, pipeline_stage: s } : l));
                           setDrawerLead(prev => ({ ...prev, status: newStatus, pipeline_stage: s }));

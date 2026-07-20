@@ -213,6 +213,7 @@ export default function Settings({ settings, onSave, showToast, currentUser }) {
                       <option value="roi">ROI-Focused</option>
                       <option value="feedback">Feedback Style</option>
                       <option value="direct">Direct / Demo</option>
+                      <option value="collaboration">Collaboration & Partnership</option>
                     </select>
                   </div>
                   <div className="input-group">

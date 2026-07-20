@@ -460,6 +460,21 @@ export default function LeadFinder({ leads, setLeads, settings, showToast }) {
   const [drawerLead, setDrawerLead]     = useState(null);
   const [composerLead, setComposerLead] = useState(null);
   const [bulkGenerating, setBulkGen]    = useState(false);
+  const [elapsedTime, setElapsedTime]   = useState(0);
+  const [isFullscreenLogs, setIsFullscreenLogs] = useState(false);
+
+  /* Timer Effect */
+  useEffect(() => {
+    let timer;
+    if (searching) {
+      timer = setInterval(() => {
+        setElapsedTime(prev => prev + 1);
+      }, 1000);
+    } else {
+      clearInterval(timer);
+    }
+    return () => clearInterval(timer);
+  }, [searching]);
 
   /* Sync settings → state only if no user overrides exist in localStorage yet */
   useEffect(() => {
@@ -489,12 +504,13 @@ export default function LeadFinder({ leads, setLeads, settings, showToast }) {
     let seenLogCount = startLogCount;
     let done = false;
     let pollAttempts = 0;
-    const maxPollAttempts = 200; // ~10 minutes at 3s intervals
+    const maxPollAttempts = 1000; // ~50 minutes at 3s intervals
 
     const log = (msg, type = "info") =>
       setSearchLog(prev => [...prev, { msg, type, t: new Date().toLocaleTimeString() }]);
 
     while (!done && pollAttempts < maxPollAttempts) {
+      pollAttempts++;
       if (isStopRequested.current) {
         log("Stop requested by user. Terminating poll...", "warn");
         break;
@@ -554,6 +570,15 @@ export default function LeadFinder({ leads, setLeads, settings, showToast }) {
             setProgress(data.progress || 5);
             isStopRequested.current = false;
             
+            // Calculate elapsed time based on created_at
+            if (data.created_at) {
+              const startMs = new Date(data.created_at).getTime();
+              const diffSec = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
+              setElapsedTime(diffSec);
+            } else {
+              setElapsedTime(0);
+            }
+
             // Restore search log and seenLogCount
             const serverLogs = data.logs || [];
             setSearchLog(serverLogs.map(entry => ({
@@ -599,6 +624,7 @@ export default function LeadFinder({ leads, setLeads, settings, showToast }) {
     setSearching(true);
     setProgress(5);
     setSearchLog([]);
+    setElapsedTime(0);
     setActiveScanId(null);
     isStopRequested.current = false;
 
@@ -893,21 +919,36 @@ export default function LeadFinder({ leads, setLeads, settings, showToast }) {
             <div className="progress-bar">
               <div className="progress-fill animated" style={{ width: `${progress}%` }} />
             </div>
-            <div style={{ fontSize: 11, color: "var(--text-4)", marginTop: 6 }}>
-              {progress}% — Searching {locations[0]}...
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--text-4)", marginTop: 6 }}>
+              <span>{progress}% — Searching {locations[0]}...</span>
+              <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600, color: "var(--brand)", display: "flex", alignItems: "center", gap: 3 }}>
+                ⏱ {Math.floor(elapsedTime / 60)}m {elapsedTime % 60}s
+              </span>
             </div>
           </div>
         )}
 
         {/* Mini log */}
         {searchLog.length > 0 && (
-          <div className="log-console" style={{ height: 120, fontSize: 11 }}>
-            {searchLog.map((l, i) => (
-              <div key={i} className={`log-line ${l.type}`}>
-                <span className="log-time">{l.t}</span>
-                <span className="log-text">{l.msg}</span>
-              </div>
-            ))}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Live Scraper Console</span>
+              <button 
+                className="btn btn-ghost btn-xs" 
+                style={{ fontSize: 10, padding: "2px 6px", height: "auto", display: "flex", alignItems: "center", gap: 4 }}
+                onClick={() => setIsFullscreenLogs(true)}
+              >
+                ⛶ Maximize
+              </button>
+            </div>
+            <div className="log-console" style={{ height: 120, fontSize: 11 }}>
+              {searchLog.map((l, i) => (
+                <div key={i} className={`log-line ${l.type}`}>
+                  <span className="log-time">{l.t}</span>
+                  <span className="log-text">{l.msg}</span>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </div>
@@ -1068,6 +1109,123 @@ export default function LeadFinder({ leads, setLeads, settings, showToast }) {
           onClose={() => setComposerLead(null)}
           onSent={(id) => { setLeads(prev => prev.map(l => l.id === id ? { ...l, status: "contacted" } : l)); }}
         />
+      )}
+
+      {/* ── Fullscreen Logs Modal ── */}
+      {isFullscreenLogs && (
+        <div style={{
+          position: "fixed",
+          inset: 0,
+          background: "rgba(10, 10, 15, 0.95)",
+          backdropFilter: "blur(20px)",
+          zIndex: 1100,
+          display: "flex",
+          flexDirection: "column",
+          padding: "24px",
+          color: "var(--text-1)",
+          animation: "fadeIn 0.25s ease-out"
+        }}>
+          {/* Header */}
+          <div style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            borderBottom: "1px solid rgba(255, 255, 255, 0.1)",
+            paddingBottom: "16px",
+            marginBottom: "20px",
+            flexShrink: 0
+          }}>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <h2 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: "var(--text-1)", letterSpacing: "-0.02em" }}>
+                  🔎 Syntek Scraper Grounding Console
+                </h2>
+                <span className={`badge ${searching ? "badge-brand" : "badge-success"}`} style={{ fontSize: 11 }}>
+                  {searching ? "● Scanning Active" : "✓ Idle"}
+                </span>
+              </div>
+              <div style={{ fontSize: 13, color: "var(--text-3)", marginTop: 4 }}>
+                Niche: <strong>{niche}</strong> | Target: <strong>{locations.join(", ")}</strong> | Limit: <strong>{limit} leads</strong>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+              {searching && (
+                <div style={{ display: "flex", alignItems: "center", gap: 12, background: "rgba(255,255,255,0.03)", padding: "6px 12px", borderRadius: "20px", border: "1px solid rgba(255,255,255,0.05)" }}>
+                  <span style={{ fontSize: 12, color: "var(--text-3)" }}>Progress: <strong>{progress}%</strong></span>
+                  <div style={{ width: 80, height: 6, background: "var(--border-1)", borderRadius: 3, overflow: "hidden" }}>
+                    <div style={{ width: `${progress}%`, height: "100%", background: "var(--brand)" }} />
+                  </div>
+                  <span style={{ fontSize: 12, fontFamily: "var(--font-mono)", fontWeight: 600, color: "var(--brand)", display: "flex", alignItems: "center", gap: 4 }}>
+                    ⏱ {Math.floor(elapsedTime / 60)}m {elapsedTime % 60}s
+                  </span>
+                </div>
+              )}
+
+              <button 
+                className="btn btn-secondary" 
+                style={{ display: "flex", alignItems: "center", gap: 6 }}
+                onClick={() => {
+                  const logText = searchLog.map(l => `[${l.t}] [${l.type.toUpperCase()}] ${l.msg}`).join("\n");
+                  navigator.clipboard.writeText(logText);
+                  showToast("Logs copied to clipboard!", "success");
+                }}
+              >
+                📋 Copy Logs
+              </button>
+
+              <button className="btn btn-ghost" style={{ fontSize: 20, padding: 8 }} onClick={() => setIsFullscreenLogs(false)}>
+                ✕
+              </button>
+            </div>
+          </div>
+
+          {/* Logs Body */}
+          <div 
+            className="log-console" 
+            style={{ 
+              flex: 1, 
+              fontSize: 12, 
+              height: "auto", 
+              padding: 20, 
+              borderRadius: "var(--radius-lg)",
+              background: "#08080c",
+              border: "1px solid rgba(255,255,255,0.05)",
+              overflowY: "auto",
+              fontFamily: "var(--font-mono)",
+              lineHeight: 1.6
+            }}
+          >
+            {searchLog.map((l, i) => (
+              <div key={i} className={`log-line ${l.type}`} style={{ padding: "4px 0", borderBottom: "1px solid rgba(255,255,255,0.02)" }}>
+                <span className="log-time" style={{ color: "var(--text-4)", marginRight: 10, userSelect: "none" }}>[{l.t}]</span>
+                <span className="log-badge" style={{ 
+                  display: "inline-block", 
+                  width: 80, 
+                  fontSize: 10, 
+                  fontWeight: 700, 
+                  textTransform: "uppercase", 
+                  color: l.type === "success" ? "var(--success)" : l.type === "error" ? "var(--danger)" : l.type === "warn" ? "var(--warning)" : "var(--info)",
+                  marginRight: 10,
+                  userSelect: "none"
+                }}>
+                  {l.type}
+                </span>
+                <span className="log-text" style={{ whiteSpace: "pre-wrap" }}>{l.msg}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* Footer controls */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "16px", flexShrink: 0 }}>
+            <span style={{ fontSize: 12, color: "var(--text-4)" }}>
+              Showing {searchLog.length} log statements. Auto-scrolling to latest...
+            </span>
+            <button className="btn btn-primary" onClick={() => setIsFullscreenLogs(false)}>
+              Close Console
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );
