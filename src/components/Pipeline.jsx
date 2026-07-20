@@ -104,7 +104,90 @@ function formatChatMessage(content) {
 }
 
 export default function Pipeline({ leads, setLeads, settings, showToast }) {
-  const stages = settings.kanbanStages || DEFAULT_STAGES;
+  // ── Stages: fetched live from Supabase ──
+  const [stages, setStages]         = useState(settings.kanbanStages || DEFAULT_STAGES);
+  const [stagesLoaded, setStagesLoaded] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/pipeline/stages")
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (Array.isArray(data) && data.length > 0) {
+          setStages(data.map(s => s.label));
+        }
+        setStagesLoaded(true);
+      })
+      .catch(() => setStagesLoaded(true));
+  }, []);
+
+  const addStage = async () => {
+    const label = window.prompt("New stage name:");
+    if (!label || !label.trim()) return;
+    try {
+      const res = await fetch("/api/pipeline/stages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label: label.trim() }),
+      });
+      if (res.ok) {
+        setStages(prev => [...prev, label.trim()]);
+        showToast(`Stage "${label.trim()}" added!`, "success");
+      } else {
+        const err = await res.json().catch(() => ({}));
+        showToast(`Failed to add stage: ${err.error || "Unknown error"}`, "danger");
+      }
+    } catch { showToast("Network error adding stage.", "danger"); }
+  };
+
+  const renameStage = async (oldLabel) => {
+    const newLabel = window.prompt("Rename stage to:", oldLabel);
+    if (!newLabel || !newLabel.trim() || newLabel.trim() === oldLabel) return;
+    try {
+      // Find stage id from API
+      const listRes = await fetch("/api/pipeline/stages");
+      const list = listRes.ok ? await listRes.json() : [];
+      const stageObj = list.find(s => s.label === oldLabel);
+      if (!stageObj) { showToast("Stage not found.", "danger"); return; }
+      const res = await fetch(`/api/pipeline/stages/${stageObj.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label: newLabel.trim() }),
+      });
+      if (res.ok) {
+        setStages(prev => prev.map(s => s === oldLabel ? newLabel.trim() : s));
+        // Also update leads that were in this stage
+        setLeads(prev => prev.map(l =>
+          l.pipeline_stage === oldLabel ? { ...l, pipeline_stage: newLabel.trim() } : l
+        ));
+        showToast(`Stage renamed to "${newLabel.trim()}"`, "success");
+      } else {
+        const err = await res.json().catch(() => ({}));
+        showToast(`Failed to rename: ${err.error || "Unknown error"}`, "danger");
+      }
+    } catch { showToast("Network error renaming stage.", "danger"); }
+  };
+
+  const deleteStage = async (label) => {
+    if (!window.confirm(`Delete stage "${label}"? Leads in this stage will move to New.`)) return;
+    try {
+      const listRes = await fetch("/api/pipeline/stages");
+      const list = listRes.ok ? await listRes.json() : [];
+      const stageObj = list.find(s => s.label === label);
+      if (!stageObj) { showToast("Stage not found.", "danger"); return; }
+      const res = await fetch(`/api/pipeline/stages/${stageObj.id}`, { method: "DELETE" });
+      if (res.ok || res.status === 204 || res.status === 200) {
+        setStages(prev => prev.filter(s => s !== label));
+        setLeads(prev => prev.map(l =>
+          l.pipeline_stage === label ? { ...l, pipeline_stage: "New" } : l
+        ));
+        showToast(`Stage "${label}" deleted.`, "info");
+      } else {
+        const err = await res.json().catch(() => ({}));
+        showToast(`Failed to delete: ${err.error || "Unknown error"}`, "danger");
+      }
+    } catch { showToast("Network error deleting stage.", "danger"); }
+  };
+
   const [dragging, setDragging] = useState(null);
   const [selectedLeads, setSelectedLeads] = useState([]);
   const [activeColumnMenu, setActiveColumnMenu] = useState(null);
@@ -375,6 +458,14 @@ export default function Pipeline({ leads, setLeads, settings, showToast }) {
             <div className="section-title">Pipeline</div>
             <div className="section-desc">{leads.length} leads across {stages.length} stages</div>
           </div>
+          <button
+            className="btn btn-ghost"
+            style={{ fontSize: 12, padding: "4px 12px", border: "1px dashed var(--border-1)", borderRadius: "var(--radius-sm)", color: "var(--text-3)", cursor: "pointer", marginLeft: 8 }}
+            onClick={addStage}
+            title="Add a new pipeline stage"
+          >
+            + Add Stage
+          </button>
         )}
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           {selectedLeads.length === 0 && leads.length > 0 && (
@@ -504,6 +595,23 @@ export default function Pipeline({ leads, setLeads, settings, showToast }) {
                           ))}
                         </>
                       )}
+
+                      {/* Stage management */}
+                      <div style={{ height: "1px", background: "var(--border-1)", margin: "4px 0" }} />
+                      <button
+                        className="btn btn-ghost"
+                        style={{ padding: "8px 12px", fontSize: 11.5, textAlign: "left", justifyContent: "flex-start", borderRadius: 0, border: "none", width: "100%", cursor: "pointer", background: "transparent", color: "var(--text-2)" }}
+                        onClick={(e) => { e.stopPropagation(); setActiveColumnMenu(null); renameStage(stage); }}
+                      >
+                        ✏️ Rename Stage
+                      </button>
+                      <button
+                        className="btn btn-ghost"
+                        style={{ padding: "8px 12px", fontSize: 11.5, textAlign: "left", justifyContent: "flex-start", borderRadius: 0, border: "none", width: "100%", cursor: "pointer", background: "transparent", color: "var(--danger)" }}
+                        onClick={(e) => { e.stopPropagation(); setActiveColumnMenu(null); deleteStage(stage); }}
+                      >
+                        🗑️ Delete Stage
+                      </button>
                     </div>
                   )}
                 </div>

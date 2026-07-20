@@ -16,6 +16,7 @@ export default function Inbox({ emails, setEmails, settings, showToast, refreshD
   const [syncing, setSyncing]     = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const [openFilter, setOpenFilter] = useState("all");
+  const [tagFilter, setTagFilter]   = useState("all");
 
   const handleClearInbox = async () => {
     if (!window.confirm("Are you sure you want to delete all emails? This cannot be undone.")) return;
@@ -74,26 +75,34 @@ export default function Inbox({ emails, setEmails, settings, showToast, refreshD
     // Search filter
     if (search) {
       const q = search.toLowerCase();
-      const matchesSearch = 
+      const matchesSearch =
         (e.from_name  || e.from  || "").toLowerCase().includes(q) ||
         (e.company    || "").toLowerCase().includes(q) ||
         (e.subject    || "").toLowerCase().includes(q);
       if (!matchesSearch) return false;
     }
 
-    // Open/unopened or Read/unread filter
+    // Open/Unopened filter — sent tab = did lead open our email, inbox tab = did we read it
     if (openFilter === "opened") {
       if (tab === "sent") {
-        return e.lead_is_opened === true;
+        if (!e.lead_is_opened) return false;
       } else {
-        return e.is_read === true || e.read === true;
+        if (!e.is_read && !e.read) return false;
       }
     } else if (openFilter === "unopened") {
       if (tab === "sent") {
-        return !e.lead_is_opened;
+        if (e.lead_is_opened) return false;
       } else {
-        return !e.is_read && !e.read;
+        if (e.is_read || e.read) return false;
       }
+    }
+
+    // Tag/label filter
+    if (tagFilter !== "all") {
+      const labels = Array.isArray(e.labels) ? e.labels : [];
+      if (tagFilter === "bounced")  return labels.includes("bounced");
+      if (tagFilter === "replied")  return labels.includes("replied");
+      if (tagFilter === "no_tag")   return labels.length === 0;
     }
 
     return true;
@@ -246,7 +255,7 @@ export default function Inbox({ emails, setEmails, settings, showToast, refreshD
           {TABS.map(t => (
             <button
               key={t.id}
-              onClick={() => { setTab(t.id); setSelected(null); setOpenFilter("all"); }}
+              onClick={() => { setTab(t.id); setSelected(null); setOpenFilter("all"); setTagFilter("all"); }}
               style={{
                 flex: 1, padding: "10px 4px", fontSize: 11.5, fontWeight: tab === t.id ? 700 : 500,
                 background: tab === t.id ? "var(--brand-subtle)" : "transparent",
@@ -285,6 +294,17 @@ export default function Inbox({ emails, setEmails, settings, showToast, refreshD
                 <option value="unopened">{tab === "sent" ? "✉ Unopened" : "✉ Unread"}</option>
               </select>
             )}
+            <select
+              className="input"
+              style={{ width: 110, padding: "0 8px", fontSize: 11.5, height: "auto", background: "var(--bg-surface)", border: "1px solid var(--border-1)" }}
+              value={tagFilter}
+              onChange={e => setTagFilter(e.target.value)}
+            >
+              <option value="all">All Tags</option>
+              <option value="replied">✅ Replied</option>
+              <option value="bounced">🚫 Bounced</option>
+              <option value="no_tag">🏷 No Tag</option>
+            </select>
           </div>
           {(tab === "inbox" || tab === "sent") && emails.length > 0 && (
             <div style={{ display: "flex", justifyContent: "flex-end" }}>

@@ -9,6 +9,8 @@ import path from "path";
 import { fileURLToPath } from "url";
 import dns from "dns";
 import { spawn } from "child_process";
+import bcryptjs from "bcryptjs";
+import jwt from "jsonwebtoken";
 
 dotenv.config();
 
@@ -79,51 +81,31 @@ function rateLimiter(limit, windowMs) {
 const globalRateLimit = rateLimiter(1000, 15 * 60 * 1000); // 1000 requests per 15 minutes per IP
 app.use("/api/", globalRateLimit);
 
-// Database connection pool setup
-const poolConfig = process.env.DATABASE_URL 
-  ? { 
-      connectionString: process.env.DATABASE_URL,
-      ssl: process.env.DATABASE_URL.includes("localhost") || process.env.DATABASE_URL.includes("127.0.0.1") 
-        ? false 
-        : { rejectUnauthorized: false }
-    }
-  : {
-      user: process.env.DB_USER || "postgres",
-      password: process.env.DB_PASSWORD || "postgres",
-      host: process.env.DB_HOST || "localhost",
-      port: process.env.DB_PORT || 5432,
-      database: process.env.DB_DATABASE || "syntek_db"
-    };
+// ─── Database: Supabase ONLY via DATABASE_URL ────────────────────────────────
+if (!process.env.DATABASE_URL) {
+  console.error("FATAL: DATABASE_URL is not set. This app requires Supabase. Set DATABASE_URL in your .env file.");
+  process.exit(1);
+}
 
-const pool = new Pool(poolConfig);
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+  // Supabase pooler-safe settings — prevents ECONNRESET crashes
+  max: 5,                    // Stay well within Supabase free-tier connection limit
+  idleTimeoutMillis: 30000,  // Release idle clients after 30s (before Supabase drops them)
+  connectionTimeoutMillis: 10000, // Fail fast if pooler is unreachable
+  keepAlive: true,           // Detect dead sockets early
+  keepAliveInitialDelayMillis: 10000,
+});
 
-// Initialize DB schema automatically
+// Swallow pool-level errors so a dropped connection never crashes the process
+pool.on("error", (err) => {
+  console.warn("[DB POOL] Idle client error (connection reset by Supabase pooler):", err.message);
+});
+
+// Initialize DB schema automatically (Supabase only)
 async function setupDatabase() {
-  // 1. Establish connection to postgres administrative DB first to verify database exists (only if not using DATABASE_URL connection string)
-  if (!process.env.DATABASE_URL) {
-    const adminPool = new Pool({
-      ...poolConfig,
-      database: "postgres"
-    });
-
-    try {
-      const res = await adminPool.query(
-        "SELECT 1 FROM pg_database WHERE datname = $1",
-        [poolConfig.database]
-      );
-      if (res.rowCount === 0) {
-        console.log(`Database '${poolConfig.database}' not found. Auto-creating database...`);
-        await adminPool.query(`CREATE DATABASE ${poolConfig.database}`);
-        console.log(`Database created successfully.`);
-      }
-    } catch (err) {
-      console.error("Database pre-flight check failed:", err.message);
-    } finally {
-      await adminPool.end();
-    }
-  }
-
-  // 2. Re-establish connection pool to the app database and create tables
+  // Apply schema migrations directly to Supabase
   try {
     // Create users table first (required for references)
     await pool.query(`
@@ -446,9 +428,22 @@ async function setupDatabase() {
       );
     `);
 
-    // Alter users table to support admin accounts
+    // Alter users table to support admin accounts and user control
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE;`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_disabled BOOLEAN DEFAULT FALSE;`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS copilot_enabled BOOLEAN DEFAULT TRUE;`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_label VARCHAR(100) DEFAULT 'Free';`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_note TEXT DEFAULT NULL;`);
+
+    // Admin activity log table
     await pool.query(`
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE;
+      CREATE TABLE IF NOT EXISTS admin_activity_log (
+        id SERIAL PRIMARY KEY,
+        action VARCHAR(255) NOT NULL,
+        details TEXT,
+        target_user_id INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
     `);
 
     // Create outboxes table for rotating senders
@@ -664,6 +659,42 @@ async function setupDatabase() {
 // Hashing and Token Utilities for Production Launch
 const JWT_SECRET = process.env.JWT_SECRET || "super-secure-syntek-secret-key-123";
 
+// ─── Admin Panel Auth ────────────────────────────────────────────────────────
+const ADMIN_JWT_SECRET = process.env.ADMIN_JWT_SECRET || "syntek-admin-ultra-secure-jwt-2026-xK9mP!";
+// Admin credentials (worldcoders17@gmail.com / raziadminboss123!#@$)
+// Password stored as bcrypt hash — never in plaintext
+const ADMIN_EMAIL = "worldcoders17@gmail.com";
+const ADMIN_PASS_HASH = bcryptjs.hashSync("raziadminboss123!#@$", 12);
+
+function generateAdminToken() {
+  return jwt.sign({ admin: true, email: ADMIN_EMAIL }, ADMIN_JWT_SECRET, { expiresIn: "8h" });
+}
+
+const authenticateAdmin = (req, res, next) => {
+  const auth = req.headers["authorization"];
+  if (!auth || !auth.startsWith("Bearer ")) return res.status(401).json({ error: "Admin token required" });
+  try {
+    const decoded = jwt.verify(auth.substring(7), ADMIN_JWT_SECRET);
+    if (!decoded.admin) return res.status(403).json({ error: "Not an admin token" });
+    next();
+  } catch {
+    return res.status(401).json({ error: "Invalid or expired admin token" });
+  }
+};
+
+// Admin login rate limit — 5 attempts per 15 min
+const adminLoginAttempts = new Map();
+function adminRateLimit(req, res, next) {
+  const ip = req.ip || req.headers["x-forwarded-for"] || req.socket.remoteAddress;
+  const now = Date.now();
+  const key = `admin_${ip}`;
+  const attempts = (adminLoginAttempts.get(key) || []).filter(t => now - t < 15 * 60 * 1000);
+  if (attempts.length >= 5) return res.status(429).json({ error: "Too many login attempts. Try again in 15 minutes." });
+  attempts.push(now);
+  adminLoginAttempts.set(key, attempts);
+  next();
+}
+
 function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString("hex");
   const iterations = 600000;
@@ -786,9 +817,12 @@ const authenticate = async (req, res, next) => {
     }
 
     if (verifiedUserId) {
-      // Verify user actually exists in the database to prevent stale sessions
-      const userRes = await pool.query("SELECT id FROM users WHERE id = $1", [verifiedUserId]);
+      // Verify user exists and is not disabled
+      const userRes = await pool.query("SELECT id, is_disabled FROM users WHERE id = $1", [verifiedUserId]);
       if (userRes.rowCount > 0) {
+        if (userRes.rows[0].is_disabled) {
+          return res.status(403).json({ error: "Your account has been disabled. Contact support." });
+        }
         req.userId = verifiedUserId;
         return next();
       }
@@ -800,6 +834,7 @@ const authenticate = async (req, res, next) => {
     return res.status(500).json({ error: `Authentication error: ${err.message}` });
   }
 };
+
 
 // Billing Router Endpoints
 app.get("/api/billing/status", authenticate, async (req, res) => {
@@ -1828,7 +1863,7 @@ app.post("/api/ai/copilot", authenticate, async (req, res) => {
     // 2. Fetch campaign/gmail settings
     const configRes = await pool.query("SELECT * FROM campaign_settings WHERE user_id = $1 LIMIT 1", [req.userId]);
     const config = decryptConfig(configRes.rows[0] || {});
-    const geminiKey = config.gemini_key || process.env.GEMINI_API_KEY || "local_antigravity";
+    // Note: AI runs via agy CLI — no Gemini API key needed
 
     // 3. Fetch past copilot history
     const historyRes = await pool.query(
@@ -1893,6 +1928,7 @@ Available Action Commands:
 10. { "action": "UPDATE_SETTINGS", "niche": "<niche (optional)>", "location": "<location (optional)>", "daily_lead_limit": <number (optional)> }
 11. { "action": "BULK_RE_RESEARCH" } (moves all leads without an email or in 'no_email' status to 'Re-research' stage and queues background AI email scraper agent)
 12. { "action": "DUPLICATE_LEADS_WITH_LINKEDIN", "stage": "<New Stage Name>" } (finds all leads that have a LinkedIn profile, ensures the new stage exists, duplicates them, and saves the duplicates in the new stage)
+13. { "action": "TRASH_BOUNCED" } (finds all leads whose sent emails bounced with delivery errors and marks them as trashed/archived automatically)
 
 
 Here is the current platform status:
@@ -1934,13 +1970,13 @@ Answer the user's message clearly, inform them of any actions you are queueing, 
       contents.push({ role: "user", parts: [{ text: message }] });
     }
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
+    // fetchGeminiWithRetry routes through agy CLI — URL param is unused
     const payload = {
       contents,
       systemInstruction: { parts: [{ text: systemPrompt }] }
     };
 
-    const resObj = await fetchGeminiWithRetry(url, {
+    const resObj = await fetchGeminiWithRetry(null, {
       method: "POST",
       body: JSON.stringify(payload)
     });
@@ -2228,6 +2264,38 @@ Answer the user's message clearly, inform them of any actions you are queueing, 
             );
           }
           actionResults.push({ success: true, message: "Activated Autopilot and queued campaign run" });
+        }
+
+        else if (act.action === "TRASH_BOUNCED") {
+          const bouncedLeads = await pool.query(`
+            SELECT DISTINCT l.id, l.name
+            FROM leads l
+            WHERE l.user_id = $1 AND l.status != 'trashed'
+              AND l.id IN (
+                SELECT DISTINCT lead_id FROM emails
+                WHERE user_id = $1 AND lead_id IS NOT NULL
+                  AND (
+                    'bounced' = ANY(labels)
+                    OR subject ILIKE '%address not found%'
+                    OR subject ILIKE '%delivery failure%'
+                    OR subject ILIKE '%undeliverable%'
+                    OR subject ILIKE '%couldn''t be delivered%'
+                    OR subject ILIKE '%failure notice%'
+                    OR preview ILIKE '%address couldn''t be found%'
+                    OR preview ILIKE '%unable to receive email%'
+                  )
+              )
+          `, [req.userId]);
+          if (bouncedLeads.rowCount > 0) {
+            const ids = bouncedLeads.rows.map(r => r.id);
+            await pool.query(
+              "UPDATE leads SET status = 'trashed', pipeline_stage = 'Archived' WHERE id = ANY($1) AND user_id = $2",
+              [ids, req.userId]
+            );
+            actionResults.push({ success: true, message: `Trashed ${bouncedLeads.rowCount} leads with bounced emails: ${bouncedLeads.rows.map(r => r.name).join(", ")}` });
+          } else {
+            actionResults.push({ success: true, message: "No new bounced leads found — all already archived!" });
+          }
         }
 
         else if (act.action === "UPDATE_SETTINGS") {
@@ -6550,8 +6618,8 @@ async function syncUserInbox(userId, config) {
           const date = message.envelope.date;
 
           // Detect mail delivery bounce notifications (invalid/non-existent addresses)
-          const isBounceSender = fromEmail.includes("mailer-daemon") || fromEmail.includes("postmaster");
-          const isBounceSubject = /delivery status notification|undeliverable|delivery failure|returned mail|bounce/i.test(subject);
+          const isBounceSender = fromEmail.includes("mailer-daemon") || fromEmail.includes("postmaster") || fromEmail.includes("noreply") || fromEmail.includes("no-reply");
+          const isBounceSubject = /delivery status notification|undeliverable|delivery failure|returned mail|bounce|address not found|couldn't be delivered|mail delivery failed|failure notice/i.test(subject);
 
           if (isBounceSender || isBounceSubject) {
             let bodyPreview = "";
@@ -6563,20 +6631,39 @@ async function syncUserInbox(userId, config) {
               bodyPreview = text.toLowerCase();
             }
 
-            if (bodyPreview) {
+            // Also check subject for bounce keywords if body scan fails
+            const bounceBodyKeywords = ["address couldn't be found", "couldn't be delivered", "address not found", "unable to receive email", "550", "5.1.1", "user unknown", "no such user", "account does not exist", "delivery has failed"];
+            const isBounceBody = bounceBodyKeywords.some(kw => bodyPreview.includes(kw)) || isBounceSubject;
+
+            if (isBounceBody || bodyPreview) {
               for (const emailKey of leadsMap.keys()) {
-                if (bodyPreview.includes(emailKey)) {
+                // Skip empty email keys — "".includes("") is always true and causes false matches
+                if (!emailKey || emailKey.length < 6) continue;
+                if (bodyPreview.includes(emailKey) || subject.toLowerCase().includes(emailKey)) {
                   const bouncedLead = leadsMap.get(emailKey);
-                  console.log(`[EMAIL AGENT] [SYNC BOUNCE] Found bounce-back for lead: ${bouncedLead.name} (${emailKey}). Marking as trashed.`);
+                  console.log(`[EMAIL AGENT] [SYNC BOUNCE] Bounce detected for lead: ${bouncedLead.name} (${emailKey}). Moving to Re-research.`);
+                  // Move to Re-research (not Archived) so the re-research cron auto-finds a valid email
                   await pool.query(
-                    "UPDATE leads SET status = 'trashed' WHERE id = $1 AND user_id = $2",
+                    "UPDATE leads SET status = 'no_email', pipeline_stage = 'Re-research', re_research_attempts = 0 WHERE id = $1 AND user_id = $2",
                     [bouncedLead.id, userId]
                   );
-                  // Update associated emails with a 'bounced' label
+                  // Mark all this lead's emails as bounced
                   await pool.query(
-                    "UPDATE emails SET labels = array_append(labels, 'bounced') WHERE from_email = $1 AND user_id = $2",
+                    "UPDATE emails SET labels = array_append(labels, 'bounced') WHERE from_email = $1 AND user_id = $2 AND NOT ('bounced' = ANY(labels))",
                     [emailKey, userId]
                   );
+                  // Delete the mailer-daemon bounce notification from inbox (it's noise, not a real reply)
+                  await pool.query(
+                    "DELETE FROM emails WHERE from_email ILIKE '%mailer-daemon%' AND user_id = $1 AND time_received > NOW() - INTERVAL '1 hour'",
+                    [userId]
+                  );
+                  // Notify user
+                  try {
+                    await pool.query(
+                      `INSERT INTO notifications (user_id, title, message, type, link) VALUES ($1, $2, $3, 'system', 'Pipeline')`,
+                      [userId, `📧 Bounced Email: ${bouncedLead.name}`, `Email bounced. Lead moved to Re-research for email lookup.`]
+                    );
+                  } catch (_) {}
                   break;
                 }
               }
@@ -6622,7 +6709,24 @@ async function syncUserInbox(userId, config) {
                 [matchedLead.name, fromEmail, matchedLead.name, subject, bodyPreview, detectedCategory, userId]
               );
 
-              // Increment template reply_count if this is the first reply
+              // ── AUTO-REPLY / SPAM DETECTION ──
+              // If classified as spam/auto-reply: move to Follow Up (manual), skip draft, skip reply_count
+              if (detectedCategory === 'spam') {
+                console.log(`[EMAIL AGENT] Auto-reply/spam detected from ${matchedLead.name}. Moving to Follow Up (manual). No draft generated.`);
+                await pool.query(
+                  "UPDATE emails SET labels = array_append(labels, 'auto_reply') WHERE id = $1 AND NOT ('auto_reply' = ANY(labels))",
+                  [insertedEmail.rows[0].id]
+                );
+                // Move lead to Follow Up — needs manual attention, not real reply
+                await pool.query(
+                  "UPDATE leads SET pipeline_stage = 'Follow Up' WHERE id = $1 AND user_id = $2 AND pipeline_stage NOT IN ('Replied','Won','Archived')",
+                  [matchedLead.id, userId]
+                );
+                // No newRepliesCount++, no reply_count increment, no draft
+                continue;
+              }
+
+              // Increment template reply_count — only for real human replies (not auto-replies)
               if (matchedLead.sent_pitch_id && matchedLead.status !== 'replied' && matchedLead.status !== 'archived') {
                 await pool.query(
                   "UPDATE pitch_templates SET reply_count = reply_count + 1 WHERE id = $1",
@@ -6644,6 +6748,7 @@ async function syncUserInbox(userId, config) {
                 );
                 console.log(`[EMAIL AGENT] Prospect ${matchedLead.name} marked interested! Lead stage moved to Replied.`);
               } else {
+                // follow_up or unread — move to Replied for human follow-up
                 await pool.query(
                   "UPDATE leads SET status = 'replied', pipeline_stage = 'Replied' WHERE id = $1 AND user_id = $2",
                   [matchedLead.id, userId]
@@ -6667,8 +6772,7 @@ async function syncUserInbox(userId, config) {
                 }
 
                 await pool.query(
-                  `INSERT INTO notifications (user_id, title, message, type, link)
-                   VALUES ($1, $2, $3, $4, 'Inbox')`,
+                  `INSERT INTO notifications (user_id, title, message, type, link) VALUES ($1, $2, $3, $4, 'Inbox')`,
                   [userId, notifTitle, notifMsg, notifType]
                 );
               } catch (notifErr) {
@@ -6678,8 +6782,9 @@ async function syncUserInbox(userId, config) {
               newRepliesCount++;
 
               // ── AI Draft Reply (NEVER auto-sends — requires user approval) ──
+              // Only generate draft for real human replies (not spam/auto-reply)
               if (matchedLead.ai_enabled) {
-                console.log(`[EMAIL AGENT] [SYNC] User ${userId}: Generating draft reply suggestion for ${matchedLead.name}...`);
+                console.log(`[EMAIL AGENT] [SYNC] User ${userId}: Generating draft reply for ${matchedLead.name}...`);
                 try {
                   let replyText = "";
                   let draftSubject = subject.toLowerCase().startsWith("re:") ? subject : `Re: ${subject}`;
@@ -6688,7 +6793,6 @@ async function syncUserInbox(userId, config) {
                   const bookingCheck = await detectMeetingBookingIntent(insertedEmail.rows[0], config, userId);
 
                   if (bookingCheck.isMeetingAgreed) {
-                    // Suggest a reply that user can send manually — do NOT book or send automatically
                     const senderName = config.sender_name || "Your Name";
                     const senderRole = config.sender_role || "Developer";
                     replyText = `Hi ${matchedLead.name},\n\nGreat to hear from you! I'd love to schedule a call to discuss further.\n\nWhen works best for you? Feel free to suggest a time and I'll confirm.\n\nBest,\n${senderName}\n${senderRole}`;
@@ -6704,18 +6808,13 @@ async function syncUserInbox(userId, config) {
                        VALUES ($1, $2, $3, $4, $5, NOW(), TRUE, 'draft', ARRAY['draft', 'pending_reply'], $6, $7)`,
                       [matchedLead.name, fromEmail, matchedLead.name, draftSubject, replyText, userId, matchedLead.id]
                     );
-                    console.log(`[EMAIL AGENT] [DRAFT SAVED] Draft reply for ${matchedLead.name} saved — awaiting user approval before sending.`);
-
-                    // Create real-time notification for the draft reply
+                    console.log(`[EMAIL AGENT] [DRAFT SAVED] Draft reply for ${matchedLead.name} saved — awaiting user approval.`);
                     try {
                       await pool.query(
-                        `INSERT INTO notifications (user_id, title, message, type, link)
-                         VALUES ($1, $2, $3, 'system', 'Inbox')`,
-                        [userId, `🪄 AI Draft Reply: ${matchedLead.name}`, `Draft response generated automatically. Review and send from Inbox.`]
+                        `INSERT INTO notifications (user_id, title, message, type, link) VALUES ($1, $2, $3, 'system', 'Inbox')`,
+                        [userId, `🪄 AI Draft Reply: ${matchedLead.name}`, `Draft response generated. Review and send from Inbox.`]
                       );
-                    } catch (draftNotifErr) {
-                      console.error("Failed to insert draft notification:", draftNotifErr.message);
-                    }
+                    } catch (_) {}
                   }
                 } catch (draftErr) {
                   console.error(`[EMAIL AGENT] [DRAFT ERROR] Failed to generate draft for ${matchedLead.name}:`, draftErr.message);
@@ -7681,12 +7780,192 @@ app.post("/api/campaigns/run", authenticate, async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ADMIN PANEL ROUTES  (all under /admin/api/* + /admin page)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Serve the admin HTML panel
+app.get("/admin", (req, res) => {
+  res.sendFile(path.join(__dirname, "admin.html"));
+});
+
+// Admin login
+app.post("/admin/api/login", adminRateLimit, async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) return res.status(400).json({ error: "Email and password required" });
+  // Constant-time email compare
+  const emailMatch = email.toLowerCase() === ADMIN_EMAIL.toLowerCase();
+  const passMatch  = bcryptjs.compareSync(password, ADMIN_PASS_HASH);
+  if (!emailMatch || !passMatch) {
+    console.warn(`[ADMIN] Failed login attempt from ${req.ip} with email: ${email}`);
+    return res.status(401).json({ error: "Invalid credentials" });
+  }
+  const token = generateAdminToken();
+  console.log(`[ADMIN] Successful login from ${req.ip}`);
+  res.json({ token, email: ADMIN_EMAIL });
+});
+
+// Admin stats overview
+app.get("/admin/api/stats", authenticateAdmin, async (req, res) => {
+  try {
+    const [users, leads, emails, activity] = await Promise.all([
+      pool.query("SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE is_disabled) as disabled, COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '30 days') as new_this_month FROM users"),
+      pool.query("SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE status = 'replied') as replied, COUNT(*) FILTER (WHERE status = 'won') as won FROM leads"),
+      pool.query("SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE category = 'sent') as sent FROM emails"),
+      pool.query("SELECT COUNT(*) as total FROM admin_activity_log"),
+    ]);
+    res.json({
+      users: users.rows[0],
+      leads: leads.rows[0],
+      emails: emails.rows[0],
+      activity: activity.rows[0],
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// List all users with their stats
+app.get("/admin/api/users", authenticateAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT u.id, u.email, u.company_name, u.created_at, u.is_admin, u.is_disabled,
+             u.subscription_tier, u.subscription_status, u.copilot_enabled, u.plan_label, u.admin_note,
+             (SELECT COUNT(*) FROM leads l WHERE l.user_id = u.id) AS lead_count,
+             (SELECT COUNT(*) FROM emails e WHERE e.user_id = u.id) AS email_count,
+             (SELECT COUNT(*) FROM emails e WHERE e.user_id = u.id AND e.category = 'sent') AS sent_count
+      FROM users u
+      ORDER BY u.created_at DESC
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Create a new user
+app.post("/admin/api/users", authenticateAdmin, async (req, res) => {
+  const { company_name, email, password, subscription_tier, plan_label } = req.body;
+  if (!email || !password) return res.status(400).json({ error: "Email and password required" });
+  try {
+    const existing = await pool.query("SELECT id FROM users WHERE email = $1", [email]);
+    if (existing.rowCount > 0) return res.status(409).json({ error: "User with this email already exists" });
+    const hashedPw = hashPassword(password);
+    const result = await pool.query(
+      `INSERT INTO users (company_name, email, password, subscription_tier, plan_label)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id, email, company_name, subscription_tier, plan_label, created_at`,
+      [company_name || "", email, hashedPw, subscription_tier || "agency", plan_label || "Free"]
+    );
+    const newUser = result.rows[0];
+    await pool.query(`INSERT INTO campaign_settings (user_id, company_name) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [newUser.id, company_name || ""]);
+    await pool.query(`INSERT INTO admin_activity_log (action, details, target_user_id) VALUES ($1, $2, $3)`,
+      ["CREATE_USER", `Created user: ${email}`, newUser.id]);
+    res.status(201).json(newUser);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update user (plan, copilot, disable, note, password)
+app.put("/admin/api/users/:id", authenticateAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { subscription_tier, plan_label, copilot_enabled, is_disabled, is_admin, admin_note, new_password } = req.body;
+  try {
+    let newPw = undefined;
+    if (new_password) {
+      newPw = hashPassword(new_password);
+    }
+    const result = await pool.query(
+      `UPDATE users SET
+        subscription_tier  = COALESCE($1, subscription_tier),
+        plan_label         = COALESCE($2, plan_label),
+        copilot_enabled    = COALESCE($3, copilot_enabled),
+        is_disabled        = COALESCE($4, is_disabled),
+        is_admin           = COALESCE($5, is_admin),
+        admin_note         = COALESCE($6, admin_note),
+        password           = COALESCE($7, password)
+       WHERE id = $8 RETURNING id, email, company_name, subscription_tier, plan_label, copilot_enabled, is_disabled, is_admin, admin_note`,
+      [subscription_tier, plan_label, copilot_enabled, is_disabled, is_admin, admin_note, newPw ?? null, id]
+    );
+    if (result.rowCount === 0) return res.status(404).json({ error: "User not found" });
+    await pool.query(`INSERT INTO admin_activity_log (action, details, target_user_id) VALUES ($1, $2, $3)`,
+      ["UPDATE_USER", `Updated user ${result.rows[0].email}: ${JSON.stringify(req.body)}`, parseInt(id)]);
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete user + all their data
+app.delete("/admin/api/users/:id", authenticateAdmin, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const userRes = await pool.query("SELECT email FROM users WHERE id = $1", [id]);
+    if (userRes.rowCount === 0) return res.status(404).json({ error: "User not found" });
+    const email = userRes.rows[0].email;
+    // Cascade delete (leads, emails, settings etc via FK ON DELETE CASCADE)
+    await pool.query("DELETE FROM users WHERE id = $1", [id]);
+    await pool.query(`INSERT INTO admin_activity_log (action, details) VALUES ($1, $2)`,
+      ["DELETE_USER", `Deleted user: ${email} (ID: ${id})`]);
+    res.json({ success: true, message: `User ${email} and all their data deleted.` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Toggle copilot for a user
+app.post("/admin/api/users/:id/toggle-copilot", authenticateAdmin, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query(
+      "UPDATE users SET copilot_enabled = NOT copilot_enabled WHERE id = $1 RETURNING id, email, copilot_enabled", [id]
+    );
+    if (result.rowCount === 0) return res.status(404).json({ error: "User not found" });
+    await pool.query(`INSERT INTO admin_activity_log (action, details, target_user_id) VALUES ($1, $2, $3)`,
+      ["TOGGLE_COPILOT", `Copilot ${result.rows[0].copilot_enabled ? "enabled" : "disabled"} for ${result.rows[0].email}`, parseInt(id)]);
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Toggle disable/enable user
+app.post("/admin/api/users/:id/toggle-disable", authenticateAdmin, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query(
+      "UPDATE users SET is_disabled = NOT is_disabled WHERE id = $1 RETURNING id, email, is_disabled", [id]
+    );
+    if (result.rowCount === 0) return res.status(404).json({ error: "User not found" });
+    await pool.query(`INSERT INTO admin_activity_log (action, details, target_user_id) VALUES ($1, $2, $3)`,
+      ["TOGGLE_DISABLE", `Account ${result.rows[0].is_disabled ? "disabled" : "enabled"} for ${result.rows[0].email}`, parseInt(id)]);
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin activity log
+app.get("/admin/api/activity", authenticateAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT a.*, u.email as user_email FROM admin_activity_log a
+       LEFT JOIN users u ON a.target_user_id = u.id
+       ORDER BY a.created_at DESC LIMIT 100`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Serve React built frontend in production
 app.use(express.static(path.join(__dirname, "dist")));
 
 app.get("/*splat", (req, res) => {
   res.sendFile(path.join(__dirname, "dist", "index.html"));
 });
+
 
 // App initialization
 setupDatabase().then(() => {
