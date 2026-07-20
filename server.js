@@ -446,6 +446,47 @@ async function setupDatabase() {
       );
     `);
 
+    // ── Pipeline kanban order persistence ──
+    await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS kanban_order INT DEFAULT 0;`);
+    await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS human_escalation_reason TEXT DEFAULT NULL;`);
+
+    // ── Agent behavior toggles (per user) ──
+    await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS auto_rereserach_on_bounce BOOLEAN DEFAULT TRUE;`);
+    await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS auto_rereserach_no_email BOOLEAN DEFAULT TRUE;`);
+    await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS auto_detect_auto_reply BOOLEAN DEFAULT TRUE;`);
+    await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS auto_reply_to_followup BOOLEAN DEFAULT TRUE;`);
+    await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS ai_draft_replies_enabled BOOLEAN DEFAULT TRUE;`);
+    await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS copilot_reply_mode VARCHAR(20) DEFAULT 'manual';`);
+    await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS copilot_reply_all BOOLEAN DEFAULT TRUE;`);
+    await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS escalate_cost BOOLEAN DEFAULT TRUE;`);
+    await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS escalate_mockups BOOLEAN DEFAULT TRUE;`);
+    await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS escalate_terms BOOLEAN DEFAULT TRUE;`);
+    await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS auto_book_meetings BOOLEAN DEFAULT FALSE;`);
+
+    // ── Google Calendar OAuth ──
+    await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS google_calendar_access_token TEXT;`);
+    await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS google_calendar_refresh_token TEXT;`);
+    await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS google_calendar_calendar_id VARCHAR(255);`);
+    await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS slack_webhook_url TEXT DEFAULT NULL;`);
+    await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS google_sheets_spreadsheet_id VARCHAR(255) DEFAULT NULL;`);
+    await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS google_sheets_sync_enabled BOOLEAN DEFAULT FALSE;`);
+
+    // ── Calendar event suggestions table ──
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS calendar_event_suggestions (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        lead_id INTEGER REFERENCES leads(id) ON DELETE SET NULL,
+        lead_name VARCHAR(255),
+        lead_email VARCHAR(255),
+        title VARCHAR(255),
+        description TEXT,
+        escalation_reason TEXT,
+        status VARCHAR(50) DEFAULT 'pending',
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
     // Create outboxes table for rotating senders
     await pool.query(`
       CREATE TABLE IF NOT EXISTS user_outboxes (
@@ -1075,7 +1116,7 @@ app.get("/api/auth/google", async (req, res) => {
   }
 
   const redirectUri = process.env.GOOGLE_REDIRECT_URI || `${req.protocol}://${req.headers.host}/api/auth/google/callback`;
-  const googleAuthUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/calendar.events&access_type=offline&prompt=consent&state=${token}`;
+  const googleAuthUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/spreadsheets&access_type=offline&prompt=consent&state=${token}`;
   
   res.redirect(googleAuthUrl);
 });
@@ -1257,7 +1298,7 @@ app.get("/api/health", async (req, res) => {
 // Leads Routes
 app.get("/api/leads", authenticate, async (req, res) => {
   try {
-    const result = await pool.query("SELECT * FROM leads WHERE user_id = $1 ORDER BY id ASC", [req.userId]);
+    const result = await pool.query("SELECT * FROM leads WHERE user_id = $1 ORDER BY kanban_order ASC, id ASC", [req.userId]);
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1419,6 +1460,20 @@ app.put("/api/leads/bulk-status", authenticate, async (req, res) => {
       "UPDATE leads SET status = COALESCE($1, status), pipeline_stage = $2 WHERE id = ANY($3) AND user_id = $4",
       [status, pipeline_stage, leadIds, req.userId]
     );
+
+    if (pipeline_stage === 'Re-research') {
+      const pendingJob = await pool.query(
+        "SELECT id FROM job_queue WHERE user_id = $1 AND job_type = 're_research' AND status = 'pending'",
+        [req.userId]
+      );
+      if (pendingJob.rowCount === 0) {
+        await pool.query(
+          "INSERT INTO job_queue (user_id, job_type, run_at) VALUES ($1, 're_research', NOW())",
+          [req.userId]
+        );
+      }
+    }
+
     res.json({ success: true, message: `Successfully updated ${leadIds.length} leads.` });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1523,6 +1578,52 @@ app.put("/api/leads/:id/status", authenticate, async (req, res) => {
     query += " WHERE id = $2 AND user_id = $3 RETURNING *";
     const result = await pool.query(query, params);
     if (result.rowCount === 0) return res.status(404).json({ error: "Lead not found" });
+
+    if (pipeline_stage === 'Re-research') {
+      const pendingJob = await pool.query(
+        "SELECT id FROM job_queue WHERE user_id = $1 AND job_type = 're_research' AND status = 'pending'",
+        [req.userId]
+      );
+      if (pendingJob.rowCount === 0) {
+        await pool.query(
+          "INSERT INTO job_queue (user_id, job_type, run_at) VALUES ($1, 're_research', NOW())",
+          [req.userId]
+        );
+      }
+    }
+
+    syncLeadToGoogleSheets(req.userId, result.rows[0]).catch(e => console.error("[SHEETS SYNC ERROR]", e));
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch("/api/leads/:id/order", authenticate, async (req, res) => {
+  const { id } = req.params;
+  const { kanban_order, human_escalation_reason } = req.body;
+  try {
+    let query = "UPDATE leads SET ";
+    const sets = [];
+    const params = [];
+    let idx = 1;
+    if (kanban_order !== undefined) {
+      sets.push(`kanban_order = $${idx++}`);
+      params.push(kanban_order);
+    }
+    if (human_escalation_reason !== undefined) {
+      sets.push(`human_escalation_reason = $${idx++}`);
+      params.push(human_escalation_reason);
+    }
+    if (sets.length === 0) {
+      return res.status(400).json({ error: "Nothing to update" });
+    }
+    query += sets.join(", ");
+    query += ` WHERE id = $${idx++} AND user_id = $${idx++} RETURNING *`;
+    params.push(id, req.userId);
+    const result = await pool.query(query, params);
+    if (result.rowCount === 0) return res.status(404).json({ error: "Lead not found" });
+    syncLeadToGoogleSheets(req.userId, result.rows[0]).catch(e => console.error("[SHEETS SYNC ERROR]", e));
     res.json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1598,6 +1699,9 @@ app.put("/api/leads/:id", authenticate, async (req, res) => {
         req.userId
       ]
     );
+    if (result.rowCount > 0) {
+      syncLeadToGoogleSheets(req.userId, result.rows[0]).catch(e => console.error("[SHEETS SYNC ERROR]", e));
+    }
     res.json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -3192,6 +3296,10 @@ app.get("/api/settings", authenticate, async (req, res) => {
       config.gemini_key = decryptText(config.gemini_key);
       config.google_access_token = decryptText(config.google_access_token);
       config.google_refresh_token = decryptText(config.google_refresh_token);
+      config.google_calendar_connected = !!config.google_calendar_access_token;
+      // Delete sensitive calendar tokens to keep frontend secure
+      delete config.google_calendar_access_token;
+      delete config.google_calendar_refresh_token;
       config.kanbanStages = config.kanban_stages;
     }
     res.json(config);
@@ -3209,19 +3317,31 @@ app.post("/api/settings", authenticate, async (req, res) => {
     sender_type, about_text, portfolio_url, social_linkedin, social_github,
     social_twitter, logo_url, banner_url, profile_icon_url, google_sandbox_mode,
     work_samples, required_contact, sequence_id, autopilot_mode, sender_location,
-    kanban_stages, re_research_enabled
+    kanban_stages, re_research_enabled,
+    auto_rereserach_on_bounce, auto_rereserach_no_email, auto_detect_auto_reply,
+    auto_reply_to_followup, ai_draft_replies_enabled, copilot_reply_mode,
+    copilot_reply_all, escalate_cost, escalate_mockups, escalate_terms,
+    auto_book_meetings, slack_webhook_url, google_sheets_spreadsheet_id, google_sheets_sync_enabled
   } = req.body;
   try {
-    // Detect and execute stage name changes to update leads pipeline_stage values
-    if (kanban_stages && Array.isArray(kanban_stages)) {
+    let finalStages = kanban_stages;
+    if (finalStages && Array.isArray(finalStages)) {
+      const protectedStages = ["New", "Re-research", "Contacted", "Follow Up", "Replied", "Won", "Archived"];
+      protectedStages.forEach(stg => {
+        if (!finalStages.includes(stg)) {
+          finalStages.push(stg);
+        }
+      });
+
+      // Detect and execute stage name changes to update leads pipeline_stage values
       const oldConfigRes = await pool.query("SELECT kanban_stages FROM campaign_settings WHERE user_id = $1 LIMIT 1", [req.userId]);
       const oldConfig = oldConfigRes.rows[0];
       if (oldConfig && oldConfig.kanban_stages && Array.isArray(oldConfig.kanban_stages)) {
         const oldStages = oldConfig.kanban_stages;
-        if (oldStages.length === kanban_stages.length) {
+        if (oldStages.length === finalStages.length) {
           for (let idx = 0; idx < oldStages.length; idx++) {
             const oldName = oldStages[idx];
-            const newName = kanban_stages[idx];
+            const newName = finalStages[idx];
             if (oldName !== newName) {
               console.log(`[STAGE RENAME] Renaming lead stage from "${oldName}" to "${newName}" for User ${req.userId}...`);
               await pool.query(
@@ -3271,7 +3391,21 @@ app.post("/api/settings", authenticate, async (req, res) => {
         autopilot_mode = COALESCE($35, autopilot_mode),
         sender_location = COALESCE($37, sender_location),
         kanban_stages = COALESCE($38, kanban_stages),
-        re_research_enabled = COALESCE($39, re_research_enabled)
+        re_research_enabled = COALESCE($39, re_research_enabled),
+        auto_rereserach_on_bounce = COALESCE($40, auto_rereserach_on_bounce),
+        auto_rereserach_no_email = COALESCE($41, auto_rereserach_no_email),
+        auto_detect_auto_reply = COALESCE($42, auto_detect_auto_reply),
+        auto_reply_to_followup = COALESCE($43, auto_reply_to_followup),
+        ai_draft_replies_enabled = COALESCE($44, ai_draft_replies_enabled),
+        copilot_reply_mode = COALESCE($45, copilot_reply_mode),
+        copilot_reply_all = COALESCE($46, copilot_reply_all),
+        escalate_cost = COALESCE($47, escalate_cost),
+        escalate_mockups = COALESCE($48, escalate_mockups),
+        escalate_terms = COALESCE($49, escalate_terms),
+        auto_book_meetings = COALESCE($50, auto_book_meetings),
+        slack_webhook_url = COALESCE($51, slack_webhook_url),
+        google_sheets_spreadsheet_id = COALESCE($52, google_sheets_spreadsheet_id),
+        google_sheets_sync_enabled = COALESCE($53, google_sheets_sync_enabled)
       WHERE user_id = $36 RETURNING *`,
       [
         niche === undefined ? null : niche,
@@ -3311,8 +3445,22 @@ app.post("/api/settings", authenticate, async (req, res) => {
         autopilot_mode === undefined ? null : autopilot_mode,
         req.userId,
         sender_location === undefined ? null : sender_location,
-        kanban_stages === undefined ? null : kanban_stages,
-        re_research_enabled === undefined ? null : re_research_enabled
+        finalStages === undefined ? null : finalStages,
+        re_research_enabled === undefined ? null : re_research_enabled,
+        auto_rereserach_on_bounce === undefined ? null : auto_rereserach_on_bounce,
+        auto_rereserach_no_email === undefined ? null : auto_rereserach_no_email,
+        auto_detect_auto_reply === undefined ? null : auto_detect_auto_reply,
+        auto_reply_to_followup === undefined ? null : auto_reply_to_followup,
+        ai_draft_replies_enabled === undefined ? null : ai_draft_replies_enabled,
+        copilot_reply_mode === undefined ? null : copilot_reply_mode,
+        copilot_reply_all === undefined ? null : copilot_reply_all,
+        escalate_cost === undefined ? null : escalate_cost,
+        escalate_mockups === undefined ? null : escalate_mockups,
+        escalate_terms === undefined ? null : escalate_terms,
+        auto_book_meetings === undefined ? null : auto_book_meetings,
+        slack_webhook_url === undefined ? null : slack_webhook_url,
+        google_sheets_spreadsheet_id === undefined ? null : google_sheets_spreadsheet_id,
+        google_sheets_sync_enabled === undefined ? null : google_sheets_sync_enabled
       ]
     );
     const config = result.rows[0];
@@ -5328,15 +5476,32 @@ Format example:
 app.get("/api/analytics", authenticate, async (req, res) => {
   try {
     const totalLeads = await pool.query("SELECT COUNT(*) FROM leads WHERE user_id = $1", [req.userId]);
-    const totalContacted = await pool.query("SELECT COUNT(*) FROM leads WHERE status NOT IN ('not contacted', 'trashed') AND user_id = $1", [req.userId]);
-    const totalOpened = await pool.query("SELECT COUNT(*) FROM leads WHERE is_opened = TRUE AND user_id = $1", [req.userId]);
-    const totalReplied = await pool.query("SELECT COUNT(*) FROM emails WHERE 'replied' = ANY(labels) AND user_id = $1", [req.userId]);
+    
+    // Count only leads to whom emails have successfully been sent (and did not bounce)
+    const totalContacted = await pool.query(
+      "SELECT COUNT(DISTINCT from_email) FROM emails WHERE category = 'sent' AND NOT ('bounced' = ANY(labels)) AND user_id = $1",
+      [req.userId]
+    );
+    
+    // Count only active leads who have opened the email
+    const totalOpened = await pool.query(
+      "SELECT COUNT(*) FROM leads WHERE is_opened = TRUE AND status NOT IN ('no_email', 'trashed') AND user_id = $1",
+      [req.userId]
+    );
+    
+    // Count replies received (not bounce notifications)
+    const totalReplied = await pool.query(
+      "SELECT COUNT(DISTINCT from_email) FROM emails WHERE category = 'reply' AND NOT ('spam' = ANY(labels)) AND user_id = $1",
+      [req.userId]
+    );
+    
     const totalInterested = await pool.query("SELECT COUNT(*) FROM leads WHERE status = 'interested' AND user_id = $1", [req.userId]);
     
     const contactedCount = parseInt(totalContacted.rows[0].count, 10);
     const openedCount = parseInt(totalOpened.rows[0].count, 10);
     const repliedCount = parseInt(totalReplied.rows[0].count, 10);
     const interestedCount = parseInt(totalInterested.rows[0].count, 10);
+    const unopenedCount = Math.max(0, contactedCount - openedCount);
 
     // Get real daily data for weeklyLeads (leads created) and opensByDay (emails opened)
     const weeklyLeads = [];
@@ -5365,7 +5530,7 @@ app.get("/api/analytics", authenticate, async (req, res) => {
     const regionalRes = await pool.query(
       `SELECT city, 
               COUNT(*) as leads_count,
-              COUNT(CASE WHEN status NOT IN ('not contacted', 'trashed') THEN 1 END) as contacted_count,
+              COUNT(CASE WHEN status NOT IN ('not contacted', 'trashed', 'no_email') THEN 1 END) as contacted_count,
               COUNT(CASE WHEN is_opened = TRUE THEN 1 END) as opened_count,
               COUNT(CASE WHEN status = 'replied' THEN 1 END) as replied_count,
               COUNT(CASE WHEN status = 'interested' THEN 1 END) as interested_count
@@ -5394,6 +5559,8 @@ app.get("/api/analytics", authenticate, async (req, res) => {
     res.json({
       leadsCount: parseInt(totalLeads.rows[0].count, 10),
       emailsSent: contactedCount,
+      emailsOpened: openedCount,
+      emailsUnopened: unopenedCount,
       openRate: contactedCount > 0 ? Math.round((openedCount / contactedCount) * 100) : 0,
       replyRate: contactedCount > 0 ? Math.round((repliedCount / contactedCount) * 100) : 0,
       interestRate: contactedCount > 0 ? Math.round((interestedCount / contactedCount) * 100) : 0,
@@ -5756,6 +5923,23 @@ async function generateDeveloperOutreach(lead, config) {
   const geminiKey = config.gemini_key || process.env.GEMINI_API_KEY;
   if (geminiKey) {
     try {
+      let bestTemplateText = "";
+      const userId = config.user_id;
+      if (userId) {
+        try {
+          const bestTemplateRes = await pool.query(
+            "SELECT subject_template, body_template FROM pitch_templates WHERE user_id = $1 AND is_active = TRUE AND sent_count > 0 ORDER BY (reply_count::float / NULLIF(sent_count::float, 0)) DESC LIMIT 1",
+            [userId]
+          );
+          if (bestTemplateRes.rowCount > 0) {
+            const bt = bestTemplateRes.rows[0];
+            bestTemplateText = `\n\nREFERENCE EXAMPLE (Here is our historically highest-performing email pitch structure/tone for inspiration. Emulate its style, length, and lack of pushiness, but personalize it to the current business):\nSubject: ${bt.subject_template}\nBody:\n${bt.body_template}`;
+          }
+        } catch (e) {
+          console.error("Failed to fetch best template for outreach generation:", e);
+        }
+      }
+
       const style = config.outreach_style || "casual";
       let styleGuidelines = "";
       
@@ -5843,11 +6027,16 @@ async function generateDeveloperOutreach(lead, config) {
           - If Core Pitch Offer is a custom service, analyze the custom service details and identify the key pain point it solves for a business of this category (${lead.type}). Address how this business specifically (${lead.name}) can benefit from it, referencing their Google metrics or website presence to personalize the pitch.
         ${stylesToolkit}
         ${styleGuidelines}
+        ${bestTemplateText}
         - Signature: Use exactly this:
           Cheers,
           ${senderName}
           ${senderRole}${(useCompany && companyName) ? `\n${companyName}` : ""}
         - Subject Line: MUST be highly click-worthy, lowercase, brief, and feel like local feedback or a quick local query (e.g. "quick question about ${lead.name}" or "website feedback").
+        - HIGH-CONVERTING PITCH RULES:
+          * First sentence hook: Reference their actual business directly. Never say "My name is" or "Hope you are doing well". Start with something like "Hey, I came across ${lead.name} on Google Maps..." or "Hey, I was looking at your rating (${lead.rating}⭐)..."
+          * No sales hype or buzzwords. Keep it grounded, direct, and conversational.
+          * Low-Friction Call-To-Action (CTA): Do NOT ask for a call or meeting. Instead, ask for simple permission to show them something: "Mind if I send over a quick 30-second screenshot/preview showing how we fix this?" or "Would you be open to seeing a quick concept I put together for you?"
         - CRITICAL FORMATTING RULES:
           * Do NOT add blank lines between every sentence — only add a single blank line between distinct paragraphs (intro, pitch, CTA, sign-off).
           * Keep each paragraph to 2-3 sentences max. Total email body must be under 120 words.
@@ -6641,12 +6830,20 @@ async function syncUserInbox(userId, config) {
                 if (!emailKey || emailKey.length < 6) continue;
                 if (bodyPreview.includes(emailKey) || subject.toLowerCase().includes(emailKey)) {
                   const bouncedLead = leadsMap.get(emailKey);
-                  console.log(`[EMAIL AGENT] [SYNC BOUNCE] Bounce detected for lead: ${bouncedLead.name} (${emailKey}). Moving to Re-research.`);
-                  // Move to Re-research (not Archived) so the re-research cron auto-finds a valid email
-                  await pool.query(
-                    "UPDATE leads SET status = 'no_email', pipeline_stage = 'Re-research', re_research_attempts = 0 WHERE id = $1 AND user_id = $2",
-                    [bouncedLead.id, userId]
-                  );
+                  const autoResOnBounce = config.auto_rereserach_on_bounce !== false;
+                  if (autoResOnBounce) {
+                    console.log(`[EMAIL AGENT] [SYNC BOUNCE] Bounce detected for lead: ${bouncedLead.name} (${emailKey}). Moving to Re-research.`);
+                    await pool.query(
+                      "UPDATE leads SET status = 'no_email', pipeline_stage = 'Re-research', re_research_attempts = 0 WHERE id = $1 AND user_id = $2",
+                      [bouncedLead.id, userId]
+                    );
+                  } else {
+                    console.log(`[EMAIL AGENT] [SYNC BOUNCE] Bounce detected for lead: ${bouncedLead.name} (${emailKey}). Auto-rerouting disabled: archiving.`);
+                    await pool.query(
+                      "UPDATE leads SET status = 'archived', pipeline_stage = 'Archived' WHERE id = $1 AND user_id = $2",
+                      [bouncedLead.id, userId]
+                    );
+                  }
                   // Mark all this lead's emails as bounced
                   await pool.query(
                     "UPDATE emails SET labels = array_append(labels, 'bounced') WHERE from_email = $1 AND user_id = $2 AND NOT ('bounced' = ANY(labels))",
@@ -6661,7 +6858,7 @@ async function syncUserInbox(userId, config) {
                   try {
                     await pool.query(
                       `INSERT INTO notifications (user_id, title, message, type, link) VALUES ($1, $2, $3, 'system', 'Pipeline')`,
-                      [userId, `📧 Bounced Email: ${bouncedLead.name}`, `Email bounced. Lead moved to Re-research for email lookup.`]
+                      [userId, `📧 Bounced Email: ${bouncedLead.name}`, autoResOnBounce ? `Email bounced. Lead moved to Re-research for email lookup.` : `Email bounced. Lead moved to Archived.`]
                     );
                   } catch (_) {}
                   break;
@@ -6674,9 +6871,9 @@ async function syncUserInbox(userId, config) {
           // Check if this matches a lead email
           const matchedLead = leadsMap.get(fromEmail);
           if (matchedLead) {
-            // Check if this reply already exists in the database (within last 48h + same subject)
+            // Check if this reply already exists in the database (within last 7 days + same subject)
             const emailCheck = await pool.query(
-              "SELECT id FROM emails WHERE user_id = $1 AND from_email = $2 AND subject = $3 AND time_received > NOW() - INTERVAL '48 hours'",
+              "SELECT id FROM emails WHERE user_id = $1 AND from_email = $2 AND subject = $3 AND time_received > NOW() - INTERVAL '7 days'",
               [userId, fromEmail, subject]
             );
 
@@ -6710,19 +6907,18 @@ async function syncUserInbox(userId, config) {
               );
 
               // ── AUTO-REPLY / SPAM DETECTION ──
-              // If classified as spam/auto-reply: move to Follow Up (manual), skip draft, skip reply_count
-              if (detectedCategory === 'spam') {
-                console.log(`[EMAIL AGENT] Auto-reply/spam detected from ${matchedLead.name}. Moving to Follow Up (manual). No draft generated.`);
+              const detectAutoReplyEnabled = config.auto_detect_auto_reply !== false;
+              if (detectAutoReplyEnabled && detectedCategory === 'spam') {
+                console.log(`[EMAIL AGENT] Auto-reply/spam detected from ${matchedLead.name}. Moving to Manual Research by Boss. No draft generated.`);
                 await pool.query(
                   "UPDATE emails SET labels = array_append(labels, 'auto_reply') WHERE id = $1 AND NOT ('auto_reply' = ANY(labels))",
                   [insertedEmail.rows[0].id]
                 );
-                // Move lead to Follow Up — needs manual attention, not real reply
+                // Move lead to Manual Research by Boss — needs manual attention, not real reply
                 await pool.query(
-                  "UPDATE leads SET pipeline_stage = 'Follow Up' WHERE id = $1 AND user_id = $2 AND pipeline_stage NOT IN ('Replied','Won','Archived')",
+                  "UPDATE leads SET pipeline_stage = 'Manual Research by Boss' WHERE id = $1 AND user_id = $2 AND pipeline_stage NOT IN ('Replied','Won','Archived')",
                   [matchedLead.id, userId]
                 );
-                // No newRepliesCount++, no reply_count increment, no draft
                 continue;
               }
 
@@ -6781,32 +6977,95 @@ async function syncUserInbox(userId, config) {
 
               newRepliesCount++;
 
-              // ── AI Draft Reply (NEVER auto-sends — requires user approval) ──
-              // Only generate draft for real human replies (not spam/auto-reply)
-              if (matchedLead.ai_enabled) {
-                console.log(`[EMAIL AGENT] [SYNC] User ${userId}: Generating draft reply for ${matchedLead.name}...`);
+              // ── AI Draft Reply / Meeting detection & Escalations ──
+              if (matchedLead.ai_enabled && config.ai_draft_replies_enabled !== false) {
+                console.log(`[EMAIL AGENT] [SYNC] User ${userId}: Generating draft reply or handling booking for ${matchedLead.name}...`);
                 try {
                   let replyText = "";
                   let draftSubject = subject.toLowerCase().startsWith("re:") ? subject : `Re: ${subject}`;
+                  let draftLabels = ['draft', 'pending_reply'];
 
-                  // Detect meeting booking intent (just for detection, NOT for auto-booking)
+                  // 1. Check for Cost / Mockup / NDA Escalation keywords
+                  const bodyLower = bodyPreview.toLowerCase();
+                  let escalationReason = null;
+                  if (config.escalate_cost !== false && /price|cost|quote|how much|rate|pricing/i.test(bodyLower)) {
+                    escalationReason = "Cost/Pricing Request";
+                  } else if (config.escalate_mockups !== false && /mockup|wireframe|design sample|custom sample|prototype/i.test(bodyLower)) {
+                    escalationReason = "Design Mockup Request";
+                  } else if (config.escalate_terms !== false && /nda|agreement|contract|terms|sign/i.test(bodyLower)) {
+                    escalationReason = "NDA/Terms Request";
+                  }
+
+                  if (escalationReason) {
+                    console.log(`[EMAIL AGENT] Human action required escalation detected: ${escalationReason} for Lead ${matchedLead.name}`);
+                    await pool.query(
+                      "UPDATE leads SET pipeline_stage = 'Follow Up', human_escalation_reason = $1 WHERE id = $2 AND user_id = $3",
+                      [escalationReason, matchedLead.id, userId]
+                    );
+                    draftLabels.push('needs_review');
+                  }
+
+                  // 2. Detect meeting booking intent
                   const bookingCheck = await detectMeetingBookingIntent(insertedEmail.rows[0], config, userId);
-
+                  
                   if (bookingCheck.isMeetingAgreed) {
-                    const senderName = config.sender_name || "Your Name";
-                    const senderRole = config.sender_role || "Developer";
-                    replyText = `Hi ${matchedLead.name},\n\nGreat to hear from you! I'd love to schedule a call to discuss further.\n\nWhen works best for you? Feel free to suggest a time and I'll confirm.\n\nBest,\n${senderName}\n${senderRole}`;
-                    console.log(`[EMAIL AGENT] Meeting intent detected for ${matchedLead.name} — draft saved for user review.`);
+                    console.log(`[EMAIL AGENT] Meeting booking intent agreed for ${matchedLead.name}`);
+                    
+                    // Insert suggestion
+                    const sugRes = await pool.query(
+                      `INSERT INTO calendar_event_suggestions (user_id, lead_id, lead_name, lead_email, title, description, status)
+                       VALUES ($1, $2, $3, $4, $5, $6, 'pending') RETURNING id`,
+                      [
+                        userId, 
+                        matchedLead.id, 
+                        matchedLead.name, 
+                        fromEmail, 
+                        `Meeting with ${matchedLead.name}`, 
+                        `Introductory call scheduled via Syntek Lead AI Copilot. Thread subject: ${subject}`,
+                      ]
+                    );
+                    
+                    // Check auto book meetings setting and Google OAuth connected status
+                    const calendarToken = await getGoogleCalendarToken(userId);
+                    const shouldAutoBook = config.auto_book_meetings === true && calendarToken;
+                    
+                    if (shouldAutoBook) {
+                      console.log(`[EMAIL AGENT] Auto booking calendar event for User ${userId}...`);
+                      const eventTime = bookingCheck.meetingTime || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+                      const success = await createGoogleCalendarEvent(userId, {
+                        title: `Meeting with ${matchedLead.name}`,
+                        description: `Introductory call scheduled via Syntek Lead AI Copilot. Thread subject: ${subject}`,
+                        attendeeEmail: fromEmail,
+                        startTime: eventTime
+                      });
+                      if (success) {
+                        await pool.query(
+                          "UPDATE calendar_event_suggestions SET status = 'confirmed' WHERE id = $1",
+                          [sugRes.rows[0].id]
+                        );
+                        replyText = `Hi ${matchedLead.name},\n\nGreat to hear from you! I have scheduled our meeting on the calendar and sent you an invitation with a Google Meet link.\n\nLooking forward to speaking with you!\n\nBest regards,\n${config.sender_name || "Your Name"}`;
+                      }
+                    }
+                    
+                    if (!replyText) {
+                      const senderName = config.sender_name || "Your Name";
+                      const senderRole = config.sender_role || "Developer";
+                      replyText = `Hi ${matchedLead.name},\n\nGreat to hear from you! I'd love to schedule a call to discuss further.\n\nWhen works best for you? Feel free to suggest a time and I'll confirm.\n\nBest,\n${senderName}\n${senderRole}`;
+                    }
                   } else {
                     replyText = await generateEmailReplyText(insertedEmail.rows[0], config, userId);
                   }
 
                   if (replyText) {
-                    // Save as DRAFT for user to review — NEVER send automatically
+                    if (escalationReason) {
+                      replyText = `[⚠️ NEEDS HUMAN REVIEW: Prospect requested pricing/mockup/NDA info]\n\n${replyText}`;
+                    }
+
+                    // Save as DRAFT for user review
                     await pool.query(
                       `INSERT INTO emails (from_name, from_email, company, subject, preview, time_received, is_read, category, labels, user_id, lead_id)
-                       VALUES ($1, $2, $3, $4, $5, NOW(), TRUE, 'draft', ARRAY['draft', 'pending_reply'], $6, $7)`,
-                      [matchedLead.name, fromEmail, matchedLead.name, draftSubject, replyText, userId, matchedLead.id]
+                       VALUES ($1, $2, $3, $4, $5, NOW(), TRUE, 'draft', $6, $7, $8)`,
+                      [matchedLead.name, fromEmail, matchedLead.name, draftSubject, replyText, draftLabels, userId, matchedLead.id]
                     );
                     console.log(`[EMAIL AGENT] [DRAFT SAVED] Draft reply for ${matchedLead.name} saved — awaiting user approval.`);
                     try {
@@ -7328,81 +7587,133 @@ async function refreshGoogleAccessToken(config) {
   }
 }
 
-async function createGoogleCalendarEvent(userId, leadName, leadEmail, summary, startDateTime) {
-  // Fetch current Google configurations
-  const configRes = await pool.query("SELECT * FROM campaign_settings WHERE user_id = $1 LIMIT 1", [userId]);
-  const config = configRes.rows[0];
-  
-  if (!config || !config.google_connected) {
-    throw new Error(`User ${userId} is not connected to Google Calendar. Please connect Google Calendar in Settings.`);
+async function createGoogleCalendarEvent(userId, arg2, arg3, arg4, arg5) {
+  let title, description, attendeeEmail, startTime;
+
+  if (typeof arg2 === "object" && arg2 !== null) {
+    title = arg2.title;
+    description = arg2.description;
+    attendeeEmail = arg2.attendeeEmail;
+    startTime = arg2.startTime;
+  } else {
+    // Positional style: (userId, leadName, leadEmail, summary, startDateTime)
+    const leadName = arg2;
+    attendeeEmail = arg3;
+    title = arg4;
+    startTime = arg5;
+    description = `Syntek AI Autopilot booked call with prospect ${leadName} (${attendeeEmail})`;
   }
 
-  // Refresh token if expired
-  let accessToken = config.google_access_token;
-  if (config.google_token_expiry && parseInt(config.google_token_expiry) <= Date.now() + 60000) {
-    accessToken = await refreshGoogleAccessToken(config);
+  // 1. Try to get Google Calendar Token first
+  let accessToken = await getGoogleCalendarToken(userId);
+  if (!accessToken) {
+    // 2. Fallback to primary Google account token
+    const configRes = await pool.query("SELECT * FROM campaign_settings WHERE user_id = $1 LIMIT 1", [userId]);
+    const config = configRes.rows[0];
+    if (config && config.google_connected) {
+      accessToken = config.google_access_token;
+      if (config.google_token_expiry && parseInt(config.google_token_expiry) <= Date.now() + 60000) {
+        try {
+          accessToken = await refreshGoogleAccessToken(config);
+        } catch (_) {}
+      }
+    }
   }
 
   if (!accessToken) {
-    throw new Error(`Could not refresh Google OAuth access token for User ${userId}. Please reconnect Google account in Settings.`);
+    console.error(`[CALENDAR EVENT CREATE] User ${userId} has no Google token configured.`);
+    return false;
   }
 
-  // Setup event timings (30 minutes duration)
-  const startTimeObj = new Date(startDateTime);
-  if (isNaN(startTimeObj.getTime())) {
-    throw new Error("Invalid start date time format: " + startDateTime);
+  const start = new Date(startTime);
+  if (isNaN(start.getTime())) {
+    console.error(`[CALENDAR EVENT CREATE] Invalid start time: ${startTime}`);
+    return false;
   }
-  const endTimeStr = new Date(startTimeObj.getTime() + 30 * 60 * 1000).toISOString();
-  const startTimeStr = startTimeObj.toISOString();
+  const end = new Date(start.getTime() + 30 * 60 * 1000); // Default 30 min duration
 
-  console.log(`[LEAD MANAGER AGENT] [GOOGLE CALENDAR] Creating calendar event for User ${userId} starting at ${startTimeStr}...`);
-
-  // Create event with Google Calendar API
-  const response = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events?conferenceDataVersion=1", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${accessToken}`,
-      "Content-Type": "application/json"
+  const body = {
+    summary: title,
+    description: description,
+    start: {
+      dateTime: start.toISOString(),
+      timeZone: "UTC"
     },
-    body: JSON.stringify({
-      summary: summary,
-      description: `Syntek AI Autopilot booked call with prospect ${leadName} (${leadEmail})`,
-      start: { dateTime: startTimeStr, timeZone: "UTC" },
-      end: { dateTime: endTimeStr, timeZone: "UTC" },
-      attendees: [{ email: leadEmail }],
-      conferenceData: {
-        createRequest: {
-          requestId: "meet-" + Date.now(),
-          conferenceSolutionKey: { type: "hangoutsMeet" }
+    end: {
+      dateTime: end.toISOString(),
+      timeZone: "UTC"
+    },
+    attendees: [
+      { email: attendeeEmail }
+    ],
+    conferenceData: {
+      createRequest: {
+        requestId: `meet-${userId}-${Date.now()}`,
+        conferenceSolutionKey: {
+          type: "hangoutsMeet"
         }
       }
-    })
-  });
-
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`Google Calendar API event insertion returned status ${response.status}: ${errText}`);
-  }
-
-  const eventData = await response.json();
-  
-  // Find Meet link inside conference solutions entry points
-  let meetLink = "";
-  if (eventData.conferenceData && eventData.conferenceData.entryPoints) {
-    const entryPoint = eventData.conferenceData.entryPoints.find(ep => ep.entryPointType === "video");
-    if (entryPoint && entryPoint.uri) {
-      meetLink = entryPoint.uri;
     }
-  }
-  
-  if (!meetLink) {
-    throw new Error("Google Calendar did not generate a Google Meet video conference link. Please verify calendar configurations.");
-  }
-
-  return {
-    meetLink,
-    eventLink: eventData.htmlLink || "https://calendar.google.com"
   };
+
+  const makeRequest = async (token) => {
+    return fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events?conferenceDataVersion=1", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(body)
+    });
+  };
+
+  try {
+    let res = await makeRequest(accessToken);
+
+    if (res.status === 401) {
+      // Try refreshing calendar token
+      const result = await pool.query("SELECT google_calendar_refresh_token, google_refresh_token FROM campaign_settings WHERE user_id = $1 LIMIT 1", [userId]);
+      const calRefreshEnc = result.rows[0]?.google_calendar_refresh_token;
+      if (calRefreshEnc) {
+        const refreshDec = decryptText(calRefreshEnc);
+        const newAccess = await refreshGoogleCalendarToken(userId, refreshDec);
+        if (newAccess) {
+          res = await makeRequest(newAccess);
+        }
+      } else {
+        const primaryRefresh = result.rows[0]?.google_refresh_token;
+        if (primaryRefresh) {
+          const configRes = await pool.query("SELECT * FROM campaign_settings WHERE user_id = $1 LIMIT 1", [userId]);
+          const newAccess = await refreshGoogleAccessToken(configRes.rows[0]);
+          if (newAccess) {
+            res = await makeRequest(newAccess);
+          }
+        }
+      }
+    }
+
+    if (!res.ok) {
+      console.error("[CALENDAR EVENT CREATE] Failed:", await res.text());
+      return false;
+    }
+
+    const data = await res.json();
+    let meetLink = "";
+    if (data.conferenceData && data.conferenceData.entryPoints) {
+      const entryPoint = data.conferenceData.entryPoints.find(ep => ep.entryPointType === "video");
+      if (entryPoint && entryPoint.uri) {
+        meetLink = entryPoint.uri;
+      }
+    }
+    console.log(`[CALENDAR EVENT CREATE] Scheduled event for User ${userId}. Meet link: ${meetLink || "none"}`);
+    return {
+      meetLink,
+      eventLink: data.htmlLink || "https://calendar.google.com"
+    };
+  } catch (err) {
+    console.error("[CALENDAR EVENT CREATE] Error:", err.message);
+    return false;
+  }
 }
 
 async function detectMeetingBookingIntent(email, config, userId) {
@@ -7954,6 +8265,402 @@ app.get("/admin/api/activity", authenticateAdmin, async (req, res) => {
        ORDER BY a.created_at DESC LIMIT 100`
     );
     res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── GOOGLE CALENDAR INTEGRATION HELPER FUNCTIONS ──
+async function getGoogleCalendarToken(userId) {
+  const result = await pool.query(
+    "SELECT google_calendar_access_token, google_calendar_refresh_token FROM campaign_settings WHERE user_id = $1 LIMIT 1",
+    [userId]
+  );
+  if (result.rowCount === 0) return null;
+  const config = result.rows[0];
+  if (!config.google_calendar_access_token) return null;
+
+  return decryptText(config.google_calendar_access_token);
+}
+
+async function refreshGoogleCalendarToken(userId, refreshToken) {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  if (!clientId || !clientSecret || !refreshToken) return null;
+
+  try {
+    const res = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        refresh_token: refreshToken,
+        grant_type: "refresh_token"
+      })
+    });
+
+    if (!res.ok) {
+      console.error("[CALENDAR REFRESH] Request failed:", await res.text());
+      return null;
+    }
+
+    const data = await res.json();
+    const encryptedAccess = encryptText(data.access_token);
+    await pool.query(
+      "UPDATE campaign_settings SET google_calendar_access_token = $1 WHERE user_id = $2",
+      [encryptedAccess, userId]
+    );
+    return data.access_token;
+  } catch (err) {
+    console.error("[CALENDAR REFRESH] Error:", err.message);
+    return null;
+  }
+}
+
+
+
+// ── GOOGLE CALENDAR INTEGRATION ROUTES ──
+app.get("/api/integrations/google-calendar/auth", authenticate, async (req, res) => {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  if (!clientId || !clientSecret) {
+    return res.status(400).json({ error: "Google OAuth credentials are not configured on the server. Please add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to your .env file." });
+  }
+
+  const redirectUri = process.env.GOOGLE_REDIRECT_URI || `${req.protocol}://${req.headers.host}/api/integrations/google-calendar/callback`;
+  const state = req.userId.toString();
+  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?response_type=code&client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent("https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/spreadsheets")}&access_type=offline&prompt=consent&state=${state}`;
+
+  res.json({ authUrl });
+});
+
+app.get("/api/integrations/google-calendar/callback", async (req, res) => {
+  const { code, state, error } = req.query;
+  if (error) {
+    return res.redirect(`/settings?calendar=error&message=${encodeURIComponent(error)}`);
+  }
+  if (!code || !state) {
+    return res.redirect(`/settings?calendar=error&message=Missing code or state`);
+  }
+
+  const userId = parseInt(state);
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  const redirectUri = process.env.GOOGLE_REDIRECT_URI || `${req.protocol}://${req.headers.host}/api/integrations/google-calendar/callback`;
+
+  try {
+    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: redirectUri,
+        grant_type: "authorization_code"
+      })
+    });
+
+    if (!tokenRes.ok) {
+      const errBody = await tokenRes.text();
+      console.error("[CALENDAR CALLBACK] Exchange failed:", errBody);
+      return res.redirect(`/settings?calendar=error&message=Token exchange failed`);
+    }
+
+    const tokenData = await tokenRes.json();
+    const encryptedAccess = encryptText(tokenData.access_token);
+    const encryptedRefresh = tokenData.refresh_token ? encryptText(tokenData.refresh_token) : null;
+
+    if (encryptedRefresh) {
+      await pool.query(
+        "UPDATE campaign_settings SET google_calendar_access_token = $1, google_calendar_refresh_token = $2, google_calendar_calendar_id = 'primary' WHERE user_id = $3",
+        [encryptedAccess, encryptedRefresh, userId]
+      );
+    } else {
+      await pool.query(
+        "UPDATE campaign_settings SET google_calendar_access_token = $1, google_calendar_calendar_id = 'primary' WHERE user_id = $2",
+        [encryptedAccess, userId]
+      );
+    }
+
+    res.redirect(`/settings?calendar=success`);
+  } catch (err) {
+    console.error("[CALENDAR CALLBACK] Error:", err.message);
+    res.redirect(`/settings?calendar=error&message=${encodeURIComponent(err.message)}`);
+  }
+});
+
+app.delete("/api/integrations/google-calendar/disconnect", authenticate, async (req, res) => {
+  try {
+    await pool.query(
+      "UPDATE campaign_settings SET google_calendar_access_token = NULL, google_calendar_refresh_token = NULL, google_calendar_calendar_id = NULL WHERE user_id = $1",
+      [req.userId]
+    );
+    res.json({ message: "Google Calendar disconnected successfully" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/integrations/google-calendar/suggestions", authenticate, async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT * FROM calendar_event_suggestions WHERE user_id = $1 AND status = 'pending' ORDER BY created_at DESC",
+      [req.userId]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/integrations/google-calendar/suggestions/:id/dismiss", authenticate, async (req, res) => {
+  const { id } = req.params;
+  try {
+    await pool.query(
+      "UPDATE calendar_event_suggestions SET status = 'dismissed' WHERE id = $1 AND user_id = $2",
+      [id, req.userId]
+    );
+    res.json({ message: "Suggestion dismissed" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/integrations/google-calendar/suggestions/:id/confirm", authenticate, async (req, res) => {
+  const { id } = req.params;
+  const { eventTime } = req.body;
+  try {
+    const sugRes = await pool.query(
+      "SELECT * FROM calendar_event_suggestions WHERE id = $1 AND user_id = $2",
+      [id, req.userId]
+    );
+    if (sugRes.rowCount === 0) {
+      return res.status(404).json({ error: "Suggestion not found" });
+    }
+    const sug = sugRes.rows[0];
+
+    const eventTimeStr = eventTime || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    const eventSuccess = await createGoogleCalendarEvent(req.userId, {
+      title: sug.title,
+      description: sug.description,
+      attendeeEmail: sug.lead_email,
+      startTime: eventTimeStr
+    });
+
+    if (eventSuccess) {
+      await pool.query(
+        "UPDATE calendar_event_suggestions SET status = 'confirmed' WHERE id = $1 AND user_id = $2",
+        [id, req.userId]
+      );
+      res.json({ success: true, message: "Calendar event scheduled successfully!" });
+    } else {
+      res.status(500).json({ error: "Failed to schedule event on Google Calendar. Verify authorization." });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/integrations/google-calendar/events", authenticate, async (req, res) => {
+  const { title, description, attendeeEmail, startTime } = req.body;
+  if (!title || !attendeeEmail || !startTime) {
+    return res.status(400).json({ error: "Missing required fields (title, attendeeEmail, startTime)" });
+  }
+  try {
+    const success = await createGoogleCalendarEvent(req.userId, {
+      title, description, attendeeEmail, startTime
+    });
+    if (success) {
+      res.json({ success: true, message: "Calendar event scheduled successfully!" });
+    } else {
+      res.status(500).json({ error: "Failed to schedule event on Google Calendar. Verify connection." });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── GOOGLE SHEETS INTEGRATION HELPER & ROUTES ──
+async function syncLeadToGoogleSheets(userId, lead) {
+  try {
+    const settingsRes = await pool.query(
+      "SELECT google_sheets_spreadsheet_id, google_sheets_sync_enabled, google_calendar_access_token, google_calendar_refresh_token FROM campaign_settings WHERE user_id = $1 LIMIT 1",
+      [userId]
+    );
+    if (settingsRes.rowCount === 0) return false;
+    const settings = settingsRes.rows[0];
+    if (!settings.google_sheets_sync_enabled || !settings.google_sheets_spreadsheet_id) {
+      return false;
+    }
+
+    let accessToken = settings.google_calendar_access_token ? decryptText(settings.google_calendar_access_token) : null;
+    if (!accessToken) return false;
+
+    const spreadsheetId = settings.google_sheets_spreadsheet_id;
+
+    const appendRow = async (token) => {
+      const range = "Sheet1!A:G";
+      const values = [
+        [
+          lead.id ? String(lead.id) : "",
+          lead.name || "",
+          lead.email || "",
+          lead.company || "",
+          lead.pipeline_stage || "",
+          lead.last_contacted_at ? new Date(lead.last_contacted_at).toISOString() : new Date().toISOString(),
+          lead.notes || ""
+        ]
+      ];
+
+      return fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}:append?valueInputOption=RAW`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          values
+        })
+      });
+    };
+
+    let res = await appendRow(accessToken);
+    if (res.status === 401 && settings.google_calendar_refresh_token) {
+      const refreshDecrypted = decryptText(settings.google_calendar_refresh_token);
+      const newAccess = await refreshGoogleCalendarToken(userId, refreshDecrypted);
+      if (newAccess) {
+        res = await appendRow(newAccess);
+      }
+    }
+
+    if (!res.ok) {
+      console.error("[GOOGLE SHEETS SYNC] Append failed:", await res.text());
+      return false;
+    }
+
+    console.log(`[GOOGLE SHEETS SYNC] Successfully synced lead ${lead.email} to spreadsheet ${spreadsheetId}`);
+    return true;
+  } catch (err) {
+    console.error("[GOOGLE SHEETS SYNC] Error:", err.message);
+    return false;
+  }
+}
+
+app.post("/api/integrations/google-sheets/test", authenticate, async (req, res) => {
+  try {
+    const { spreadsheetId } = req.body;
+    if (!spreadsheetId) {
+      return res.status(400).json({ error: "Spreadsheet ID is required" });
+    }
+
+    const settingsRes = await pool.query(
+      "SELECT google_calendar_access_token, google_calendar_refresh_token FROM campaign_settings WHERE user_id = $1 LIMIT 1",
+      [req.userId]
+    );
+    if (settingsRes.rowCount === 0 || !settingsRes.rows[0].google_calendar_access_token) {
+      return res.status(400).json({ error: "Google account not connected. Please connect Google Calendar first." });
+    }
+
+    const settings = settingsRes.rows[0];
+    let accessToken = decryptText(settings.google_calendar_access_token);
+
+    const getMeta = async (token) => {
+      return fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}`, {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+    };
+
+    let apiRes = await getMeta(accessToken);
+    if (apiRes.status === 401 && settings.google_calendar_refresh_token) {
+      const refreshDecrypted = decryptText(settings.google_calendar_refresh_token);
+      const newAccess = await refreshGoogleCalendarToken(req.userId, refreshDecrypted);
+      if (newAccess) {
+        apiRes = await getMeta(newAccess);
+      }
+    }
+
+    if (!apiRes.ok) {
+      const errText = await apiRes.text();
+      return res.status(apiRes.status).json({ error: `Spreadsheet check failed: ${errText}` });
+    }
+
+    const data = await apiRes.json();
+    res.json({ title: data.properties.title });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/integrations/google-sheets/sync", authenticate, async (req, res) => {
+  try {
+    const { spreadsheetId } = req.body;
+    const settingsRes = await pool.query(
+      "SELECT google_sheets_spreadsheet_id, google_calendar_access_token, google_calendar_refresh_token FROM campaign_settings WHERE user_id = $1 LIMIT 1",
+      [req.userId]
+    );
+    if (settingsRes.rowCount === 0 || !settingsRes.rows[0].google_calendar_access_token) {
+      return res.status(400).json({ error: "Google account not connected. Please connect Google Calendar first." });
+    }
+    const settings = settingsRes.rows[0];
+    const targetSpreadsheetId = spreadsheetId || settings.google_sheets_spreadsheet_id;
+    if (!targetSpreadsheetId) {
+      return res.status(400).json({ error: "No spreadsheet ID specified." });
+    }
+
+    let accessToken = decryptText(settings.google_calendar_access_token);
+    
+    // Fetch all leads
+    const leadsRes = await pool.query("SELECT * FROM leads WHERE user_id = $1 ORDER BY id ASC", [req.userId]);
+    if (leadsRes.rowCount === 0) {
+      return res.json({ message: "No leads to sync.", count: 0 });
+    }
+
+    const values = [
+      ["ID", "Name", "Email", "Company", "Pipeline Stage", "Last Contacted", "Notes"]
+    ];
+    leadsRes.rows.forEach(lead => {
+      values.push([
+        lead.id ? String(lead.id) : "",
+        lead.name || "",
+        lead.email || "",
+        lead.company || "",
+        lead.pipeline_stage || "",
+        lead.last_contacted_at ? new Date(lead.last_contacted_at).toISOString() : "",
+        lead.notes || ""
+      ]);
+    });
+
+    const updateSheet = async (token) => {
+      const range = `Sheet1!A1:G${values.length}`;
+      return fetch(`https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values/${range}?valueInputOption=RAW`, {
+        method: "PUT",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          values
+        })
+      });
+    };
+
+    let apiRes = await updateSheet(accessToken);
+    if (apiRes.status === 401 && settings.google_calendar_refresh_token) {
+      const refreshDecrypted = decryptText(settings.google_calendar_refresh_token);
+      const newAccess = await refreshGoogleCalendarToken(req.userId, refreshDecrypted);
+      if (newAccess) {
+        apiRes = await updateSheet(newAccess);
+      }
+    }
+
+    if (!apiRes.ok) {
+      const errBody = await apiRes.text();
+      return res.status(apiRes.status).json({ error: `Failed to update sheet: ${errBody}` });
+    }
+
+    res.json({ message: `Successfully synced ${leadsRes.rowCount} leads to Google Sheet.`, count: leadsRes.rowCount });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

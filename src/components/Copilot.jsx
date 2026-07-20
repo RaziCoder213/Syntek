@@ -321,11 +321,16 @@ export default function Copilot({ showToast, onRefreshAll }) {
                     </div>
 
                     {/* Edit button for user messages */}
-                    {m.role === "user" && !loading && (
+                    {m.role === "user" && (
                       <button
-                        onClick={() => startEditMessage(m)}
+                        onClick={() => {
+                          if (loading) {
+                            handleStop();
+                          }
+                          startEditMessage(m);
+                        }}
                         style={{ alignSelf: "flex-end", background: "none", border: "none", color: "var(--text-4)", fontSize: "10px", cursor: "pointer", padding: "2px 4px", marginTop: -2 }}
-                        title="Edit and resend this message"
+                        title="Edit and resend this message (will stop active generation)"
                       >
                         ✏️ Edit
                       </button>
