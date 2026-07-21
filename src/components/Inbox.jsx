@@ -15,6 +15,7 @@ export default function Inbox({ emails, setEmails, settings, showToast, refreshD
   const [sending, setSending]     = useState(false);   // for pending-reply approval
   const [syncing, setSyncing]     = useState(false);
   const [regenerating, setRegenerating] = useState(false);
+  const [generatingDraft, setGeneratingDraft] = useState(false);
   const [openFilter, setOpenFilter] = useState("all");
   const [tagFilter, setTagFilter]   = useState("all");
 
@@ -194,6 +195,43 @@ export default function Inbox({ emails, setEmails, settings, showToast, refreshD
       showToast("Network error regenerating draft.", "danger");
     } finally {
       setRegenerating(false);
+    }
+  }
+
+  async function handleGenerateAIDraft() {
+    if (!selected || generatingDraft) return;
+    setGeneratingDraft(true);
+    try {
+      const res = await fetch(`/api/emails/${selected.id}/generate-reply`, {
+        method: "POST"
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.newDraft) {
+          const draft = {
+            ...data.newDraft,
+            from:  data.newDraft.from_name,
+            email: data.newDraft.from_email,
+            time:  data.newDraft.time_received,
+            read:  data.newDraft.is_read,
+          };
+          setEmails(prev => [draft, ...prev]);
+          setTab("pending");
+          setSelected(draft);
+          setReplyText(data.replyText || "");
+          showToast("AI draft reply generated! Review in Pending tab. ✨", "success");
+        } else {
+          showToast("Draft generation returned empty.", "warning");
+        }
+      } else {
+        const err = await res.json().catch(() => ({}));
+        showToast(`Draft generation failed: ${err.error || "Unknown error"}`, "danger");
+      }
+    } catch (err) {
+      console.error(err);
+      showToast("Network error generating draft.", "danger");
+    } finally {
+      setGeneratingDraft(false);
     }
   }
 
@@ -393,7 +431,11 @@ export default function Inbox({ emails, setEmails, settings, showToast, refreshD
                   {email.category && !isPending && (
                     <div style={{ marginTop: 6 }}>
                       <span className={`badge ${catBadge[email.category] || "badge-neutral"}`} style={{ fontSize: 10 }}>
-                        {email.category?.replace("_", " ")}
+                        {email.category === "interested" ? "🔥 Interested" :
+                         email.category === "not_interested" ? "💤 Not Interested" :
+                         email.category === "follow_up" ? "⏳ Follow Up" :
+                         email.category === "spam" ? "🤖 Automated / Spam" :
+                         email.category?.replace("_", " ")}
                       </span>
                     </div>
                   )}
@@ -528,7 +570,17 @@ export default function Inbox({ emails, setEmails, settings, showToast, refreshD
                       </button>
                     </>
                   )}
-                  <button className="btn btn-primary" onClick={handleReply} disabled={replying || !replyText.trim() || regenerating}>
+                  {tab === "inbox" && (
+                    <button 
+                      className="btn btn-secondary" 
+                      onClick={handleGenerateAIDraft} 
+                      disabled={generatingDraft}
+                      style={{ display: "flex", alignItems: "center", gap: 4 }}
+                    >
+                      {generatingDraft ? <><span className="spinner spinner-sm" /> Drafting...</> : "🪄 AI Draft"}
+                    </button>
+                  )}
+                  <button className="btn btn-primary" onClick={handleReply} disabled={replying || !replyText.trim() || regenerating || generatingDraft}>
                     {replying ? <><span className="spinner spinner-sm" /> Sending...</> : "↑ Send Reply"}
                   </button>
                 </div>
