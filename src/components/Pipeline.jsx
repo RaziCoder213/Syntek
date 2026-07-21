@@ -362,8 +362,15 @@ export default function Pipeline({ leads, setLeads, settings, showToast }) {
   stages.forEach(s => { grouped[s] = []; });
   leads.forEach(l => {
     const stage = l.pipeline_stage || getStageFromStatus(l.status);
-    if (grouped[stage]) grouped[stage].push(l);
-    else grouped["New"].push(l);
+    if (grouped[stage]) {
+      grouped[stage].push(l);
+    } else {
+      const fallbackStage = stages.includes("New") ? "New" : (stages[0] || "New");
+      if (!grouped[fallbackStage]) {
+        grouped[fallbackStage] = [];
+      }
+      grouped[fallbackStage].push(l);
+    }
   });
 
   const filteredGrouped = {};

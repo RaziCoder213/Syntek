@@ -689,6 +689,37 @@ async function setupDatabase() {
     // Clean up any stale running scans from previous process lifetime
     await pool.query("UPDATE scans SET status = 'failed', error = 'Scan interrupted by server restart' WHERE status = 'running'");
 
+    // Ensure all users have the correct 11 default stages in pipeline_stages
+    const newStageDefaults = [
+      { id: "new", label: "New", color: "var(--color-indigo)", val: 100 },
+      { id: "re_research", label: "Re-research", color: "#ec4899", val: 50 },
+      { id: "researched", label: "Researched", color: "#3b82f6", val: 150 },
+      { id: "drafted", label: "Drafted", color: "#8b5cf6", val: 200 },
+      { id: "contacted", label: "Contacted", color: "var(--color-amber)", val: 250 },
+      { id: "follow_up", label: "Follow Up", color: "#f97316", val: 300 },
+      { id: "opened", label: "Opened", color: "#10b981", val: 400 },
+      { id: "replied", label: "Replied", color: "var(--color-teal)", val: 500 },
+      { id: "won", label: "Won", color: "var(--color-emerald)", val: 1000 },
+      { id: "archived", label: "Archived", color: "#6b7280", val: 0 },
+      { id: "trash", label: "Trash", color: "var(--color-crimson)", val: 0 }
+    ];
+
+    for (const u of allUsers.rows) {
+      const stagesRes = await pool.query("SELECT * FROM pipeline_stages WHERE user_id = $1", [u.id]);
+      const hasOldDefaults = stagesRes.rows.some(r => r.label === 'Not Contacted' || r.label === 'In Outreach');
+      if (stagesRes.rowCount === 0 || hasOldDefaults) {
+        console.log(`[MIGRATION] Resetting pipeline stages to 11 defaults for user ${u.id}`);
+        await pool.query("DELETE FROM pipeline_stages WHERE user_id = $1", [u.id]);
+        for (let i = 0; i < newStageDefaults.length; i++) {
+          const d = newStageDefaults[i];
+          await pool.query(
+            "INSERT INTO pipeline_stages (user_id, stage_id, label, color, position, value_multiplier) VALUES ($1, $2, $3, $4, $5, $6)",
+            [u.id, d.id, d.label, d.color, i, d.val]
+          );
+        }
+      }
+    }
+
     console.log("PostgreSQL schema validated and multi-tenant migrations applied successfully.");
   } catch (err) {
     console.error("Failed to run database migrations:", err.message);
@@ -2456,13 +2487,17 @@ app.get("/api/pipeline/stages", authenticate, async (req, res) => {
     
     if (result.rowCount === 0) {
       const defaults = [
-        { id: "not contacted", label: "Not Contacted", color: "var(--color-indigo)", val: 100 },
-        { id: "contacted", label: "In Outreach", color: "var(--color-amber)", val: 250 },
-        { id: "replied", label: "Engaged Responses", color: "var(--color-teal)", val: 350 },
-        { id: "interested", label: "Hot Leads", color: "#06b6d4", val: 600 },
-        { id: "meeting_booked", label: "Meeting Booked", color: "var(--color-emerald)", val: 850 },
-        { id: "closed", label: "Closed / Signed", color: "var(--color-lime)", val: 1200 },
-        { id: "trashed", label: "Trashed / Wrong Data", color: "var(--color-crimson)", val: 0 }
+        { id: "new", label: "New", color: "var(--color-indigo)", val: 100 },
+        { id: "re_research", label: "Re-research", color: "#ec4899", val: 50 },
+        { id: "researched", label: "Researched", color: "#3b82f6", val: 150 },
+        { id: "drafted", label: "Drafted", color: "#8b5cf6", val: 200 },
+        { id: "contacted", label: "Contacted", color: "var(--color-amber)", val: 250 },
+        { id: "follow_up", label: "Follow Up", color: "#f97316", val: 300 },
+        { id: "opened", label: "Opened", color: "#10b981", val: 400 },
+        { id: "replied", label: "Replied", color: "var(--color-teal)", val: 500 },
+        { id: "won", label: "Won", color: "var(--color-emerald)", val: 1000 },
+        { id: "archived", label: "Archived", color: "#6b7280", val: 0 },
+        { id: "trash", label: "Trash", color: "var(--color-crimson)", val: 0 }
       ];
       
       const client = await pool.connect();
