@@ -1,4 +1,5 @@
 /* eslint-disable */
+process.env.UV_THREADPOOL_SIZE = "64";
 import express from "express";
 import cors from "cors";
 import pg from "pg";
@@ -186,6 +187,21 @@ async function setupDatabase() {
     `);
     await pool.query(`
       ALTER TABLE emails ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+    `);
+    await pool.query(`
+      ALTER TABLE emails ADD COLUMN IF NOT EXISTS message_id VARCHAR(255) DEFAULT NULL;
+    `);
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_emails_user_message ON emails(user_id, message_id) WHERE message_id IS NOT NULL;
+    `);
+    // Safe deduplication: delete newer duplicate emails keeping only the first copy
+    await pool.query(`
+      DELETE FROM emails a USING emails b
+      WHERE a.id > b.id
+        AND a.user_id = b.user_id
+        AND LOWER(a.from_email) = LOWER(b.from_email)
+        AND a.subject = b.subject
+        AND a.category = b.category;
     `);
 
     // Add user_id to leads and emails tables
@@ -2984,8 +3000,11 @@ app.post("/api/emails/sync", authenticate, async (req, res) => {
 
 app.delete("/api/emails", authenticate, async (req, res) => {
   try {
-    await pool.query("DELETE FROM emails WHERE user_id = $1", [req.userId]);
-    res.json({ success: true, message: "All emails cleared." });
+    await pool.query(
+      "DELETE FROM emails WHERE user_id = $1 AND NOT ('sent' = ANY(labels)) AND category != 'sent'",
+      [req.userId]
+    );
+    res.json({ success: true, message: "Inbox cleared successfully (sent emails preserved)." });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2997,7 +3016,13 @@ app.put("/api/emails/:id", authenticate, async (req, res) => {
   try {
     const result = await pool.query(
       "UPDATE emails SET is_read = COALESCE($1, is_read), category = COALESCE($2, category), labels = COALESCE($3, labels) WHERE id = $4 AND user_id = $5 RETURNING *",
-      [is_read, category, labels, id, req.userId]
+      [
+        is_read === undefined ? null : is_read,
+        category === undefined ? null : category,
+        labels === undefined ? null : labels,
+        id,
+        req.userId
+      ]
     );
     if (result.rowCount === 0) return res.status(404).json({ error: "Email not found" });
     res.json(result.rows[0]);
@@ -3212,13 +3237,24 @@ app.post("/api/emails/:id/generate-reply", authenticate, async (req, res) => {
 
     const replyText = await generateEmailReplyText(email, config, req.userId);
     
-    // Save/update the regenerated reply preview text in database
-    await pool.query(
-      "UPDATE emails SET preview = $1 WHERE id = $2 AND user_id = $3",
-      [replyText, id, req.userId]
-    );
-
-    res.json({ replyText });
+    if (email.category === 'draft' || (email.labels && email.labels.includes('pending_reply'))) {
+      // Save/update the regenerated reply preview text in database
+      await pool.query(
+        "UPDATE emails SET preview = $1 WHERE id = $2 AND user_id = $3",
+        [replyText, id, req.userId]
+      );
+      res.json({ replyText });
+    } else {
+      // This is a manual draft generation for an incoming email in the inbox!
+      const draftSubject = email.subject.toLowerCase().startsWith("re:") ? email.subject : `Re: ${email.subject}`;
+      const draftLabels = ['draft', 'pending_reply'];
+      const insertRes = await pool.query(
+        `INSERT INTO emails (from_name, from_email, company, subject, preview, time_received, is_read, category, labels, user_id, lead_id)
+         VALUES ($1, $2, $3, $4, $5, NOW(), TRUE, 'draft', $6, $7, $8) RETURNING *`,
+        [email.from_name, email.from_email, email.company, draftSubject, replyText, draftLabels, req.userId, lead ? lead.id : null]
+      );
+      res.json({ replyText, newDraft: insertRes.rows[0] });
+    }
   } catch (err) {
     console.error("Failed to generate smart reply:", err);
     await handleGeminiError(req.userId, err, "Smart Reply Generation");
@@ -4413,7 +4449,7 @@ async function fetchGeminiWithRetry(url, options, logCallback = () => {}, maxRet
       });
 
       const lowerResp = agyResponse.toLowerCase();
-      if (lowerResp.includes("too many requests") || lowerResp.includes("rate limit") || lowerResp.includes("429") || lowerResp.includes("quota exceeded")) {
+      if (lowerResp.includes("too many requests") || lowerResp.includes("rate limit") || lowerResp.includes("quota exceeded") || lowerResp.includes("resource has been exhausted") || /\b429\b/.test(lowerResp)) {
         throw new Error(`Rate limit or quota error inside agy output: ${agyResponse}`);
       }
 
@@ -4849,69 +4885,75 @@ Format example:
         break;
       }
 
-      const batchPromises = batchLeads.map(async (lead) => {
-        if (!lead.name) return null;
-        const normalizedName = lead.name.toLowerCase().trim();
-        if (seenNames.has(normalizedName)) return null;
+      const batchLeadsToQualify = [];
+      const concurrencyLimit = 3;
+      for (let i = 0; i < batchLeads.length; i += concurrencyLimit) {
+        const chunk = batchLeads.slice(i, i + concurrencyLimit);
+        const chunkPromises = chunk.map(async (lead) => {
+          if (!lead.name) return null;
+          const normalizedName = lead.name.toLowerCase().trim();
+          if (seenNames.has(normalizedName)) return null;
 
-        let email = lead.email;
-        if (email) {
-          if (isValidEmail(email)) {
-            // keep it
+          let email = lead.email;
+          if (email) {
+            if (isValidEmail(email)) {
+              // keep it
+            } else {
+              email = null;
+            }
+          }
+
+          let phone = lead.phone || null;
+          if (phone && (phone.includes("XXX") || phone.includes("xxx") || phone.includes("000-0000"))) {
+            phone = null;
+          }
+
+          let website = lead.website || null;
+          let websiteStatus = lead.website_status || 'unknown';
+          let hasBooking = false;
+
+          if (website && website !== "null" && website !== "none" && website !== "") {
+            if (!/^https?:\/\//i.test(website)) {
+              website = `http://${website}`;
+            }
+            addLog("info", `[SEARCHER AGENT] Verifying website status and crawling: ${website}...`);
+            const crawlRes = await crawlWebsiteForEmail(website, (type, t) => {
+              if (type === "warn") addLog("warn", `[SEARCHER AGENT] ${t}`);
+              else if (type === "info") addLog("info", `[SEARCHER AGENT] ${t}`);
+            });
+            websiteStatus = crawlRes.websiteStatus || 'active';
+            hasBooking = crawlRes.hasBooking || false;
+            if (!email && crawlRes.emails && crawlRes.emails.length > 0) {
+              email = crawlRes.emails[0];
+            }
+            if (!phone && crawlRes.phones && crawlRes.phones.length > 0) {
+              phone = crawlRes.phones[0];
+            }
+            if (crawlRes.socials && crawlRes.socials.instagram && (!lead.instagram || lead.instagram === "@none" || lead.instagram === "")) {
+              lead.instagram = crawlRes.socials.instagram;
+            }
           } else {
-            email = null;
+            websiteStatus = 'no_website';
           }
-        }
 
-        let phone = lead.phone || null;
-        if (phone && (phone.includes("XXX") || phone.includes("xxx") || phone.includes("000-0000"))) {
-          phone = null;
-        }
+          const updatedLead = {
+            ...lead,
+            email,
+            phone,
+            website,
+            website_status: websiteStatus,
+            hasBooking,
+            owner_name: lead.owner_name || null,
+            owner_role: lead.owner_role || null,
+            owner_contact: lead.owner_contact || null
+          };
 
-        let website = lead.website || null;
-        let websiteStatus = lead.website_status || 'unknown';
-        let hasBooking = false;
+          return updatedLead;
+        });
 
-        if (website && website !== "null" && website !== "none" && website !== "") {
-          if (!/^https?:\/\//i.test(website)) {
-            website = `http://${website}`;
-          }
-          addLog("info", `[SEARCHER AGENT] Verifying website status and crawling: ${website}...`);
-          const crawlRes = await crawlWebsiteForEmail(website, (type, t) => {
-            if (type === "warn") addLog("warn", `[SEARCHER AGENT] ${t}`);
-            else if (type === "info") addLog("info", `[SEARCHER AGENT] ${t}`);
-          });
-          websiteStatus = crawlRes.websiteStatus || 'active';
-          hasBooking = crawlRes.hasBooking || false;
-          if (!email && crawlRes.emails && crawlRes.emails.length > 0) {
-            email = crawlRes.emails[0];
-          }
-          if (!phone && crawlRes.phones && crawlRes.phones.length > 0) {
-            phone = crawlRes.phones[0];
-          }
-          if (crawlRes.socials && crawlRes.socials.instagram && (!lead.instagram || lead.instagram === "@none" || lead.instagram === "")) {
-            lead.instagram = crawlRes.socials.instagram;
-          }
-        } else {
-          websiteStatus = 'no_website';
-        }
-
-        const updatedLead = {
-          ...lead,
-          email,
-          phone,
-          website,
-          website_status: websiteStatus,
-          hasBooking,
-          owner_name: lead.owner_name || null,
-          owner_role: lead.owner_role || null,
-          owner_contact: lead.owner_contact || null
-        };
-
-        return updatedLead;
-      });
-
-      const batchLeadsToQualify = (await Promise.all(batchPromises)).filter(Boolean);
+        const chunkResults = await Promise.all(chunkPromises);
+        batchLeadsToQualify.push(...chunkResults.filter(Boolean));
+      }
 
       // Perform strict post-Gemini Javascript filter validation
       const qualifiedBatch = [];
@@ -5286,69 +5328,75 @@ Format example:
       }
 
       let addedInBatch = 0;
-      const batchPromises = batchLeads.map(async (lead) => {
-        if (!lead.name) return null;
-        const normalizedName = lead.name.toLowerCase().trim();
-        if (seenNames.has(normalizedName)) return null;
+      const batchLeadsToQualify = [];
+      const concurrencyLimit = 3;
+      for (let i = 0; i < batchLeads.length; i += concurrencyLimit) {
+        const chunk = batchLeads.slice(i, i + concurrencyLimit);
+        const chunkPromises = chunk.map(async (lead) => {
+          if (!lead.name) return null;
+          const normalizedName = lead.name.toLowerCase().trim();
+          if (seenNames.has(normalizedName)) return null;
 
-        let email = lead.email;
-        if (email) {
-          if (isValidEmail(email)) {
-            // keep it
+          let email = lead.email;
+          if (email) {
+            if (isValidEmail(email)) {
+              // keep it
+            } else {
+              email = null;
+            }
+          }
+
+          let phone = lead.phone || null;
+          if (phone && (phone.includes("XXX") || phone.includes("xxx") || phone.includes("000-0000"))) {
+            phone = null;
+          }
+
+          let website = lead.website || null;
+          let websiteStatus = lead.website_status || 'unknown';
+          let hasBooking = false;
+
+          if (website && website !== "null" && website !== "none" && website !== "") {
+            if (!/^https?:\/\//i.test(website)) {
+              website = `http://${website}`;
+            }
+            addLog("info", `[SEARCHER AGENT] Verifying website status and crawling: ${website}...`);
+            const crawlRes = await crawlWebsiteForEmail(website, (type, t) => {
+              if (type === "warn") addLog("warn", `[SEARCHER AGENT] ${t}`);
+              else if (type === "info") addLog("info", `[SEARCHER AGENT] ${t}`);
+            });
+            websiteStatus = crawlRes.websiteStatus || 'active';
+            hasBooking = crawlRes.hasBooking || false;
+            if (!email && crawlRes.emails && crawlRes.emails.length > 0) {
+              email = crawlRes.emails[0];
+            }
+            if (!phone && crawlRes.phones && crawlRes.phones.length > 0) {
+              phone = crawlRes.phones[0];
+            }
+            if (crawlRes.socials && crawlRes.socials.instagram && (!lead.instagram || lead.instagram === "@none" || lead.instagram === "")) {
+              lead.instagram = crawlRes.socials.instagram;
+            }
           } else {
-            email = null;
+            websiteStatus = 'no_website';
           }
-        }
 
-        let phone = lead.phone || null;
-        if (phone && (phone.includes("XXX") || phone.includes("xxx") || phone.includes("000-0000"))) {
-          phone = null;
-        }
+          const updatedLead = {
+            ...lead,
+            email,
+            phone,
+            website,
+            website_status: websiteStatus,
+            hasBooking,
+            owner_name: lead.owner_name || null,
+            owner_role: lead.owner_role || null,
+            owner_contact: lead.owner_contact || null
+          };
 
-        let website = lead.website || null;
-        let websiteStatus = lead.website_status || 'unknown';
-        let hasBooking = false;
+          return updatedLead;
+        });
 
-        if (website && website !== "null" && website !== "none" && website !== "") {
-          if (!/^https?:\/\//i.test(website)) {
-            website = `http://${website}`;
-          }
-          addLog("info", `[SEARCHER AGENT] Verifying website status and crawling: ${website}...`);
-          const crawlRes = await crawlWebsiteForEmail(website, (type, t) => {
-            if (type === "warn") addLog("warn", `[SEARCHER AGENT] ${t}`);
-            else if (type === "info") addLog("info", `[SEARCHER AGENT] ${t}`);
-          });
-          websiteStatus = crawlRes.websiteStatus || 'active';
-          hasBooking = crawlRes.hasBooking || false;
-          if (!email && crawlRes.emails && crawlRes.emails.length > 0) {
-            email = crawlRes.emails[0];
-          }
-          if (!phone && crawlRes.phones && crawlRes.phones.length > 0) {
-            phone = crawlRes.phones[0];
-          }
-          if (crawlRes.socials && crawlRes.socials.instagram && (!lead.instagram || lead.instagram === "@none" || lead.instagram === "")) {
-            lead.instagram = crawlRes.socials.instagram;
-          }
-        } else {
-          websiteStatus = 'no_website';
-        }
-
-        const updatedLead = {
-          ...lead,
-          email,
-          phone,
-          website,
-          website_status: websiteStatus,
-          hasBooking,
-          owner_name: lead.owner_name || null,
-          owner_role: lead.owner_role || null,
-          owner_contact: lead.owner_contact || null
-        };
-
-        return updatedLead;
-      });
-
-      const batchLeadsToQualify = (await Promise.all(batchPromises)).filter(Boolean);
+        const chunkResults = await Promise.all(chunkPromises);
+        batchLeadsToQualify.push(...chunkResults.filter(Boolean));
+      }
 
       // Perform strict post-Gemini Javascript filter validation
       const qualifiedBatch = [];
@@ -6906,11 +6954,20 @@ async function syncUserInbox(userId, config) {
           // Check if this matches a lead email
           const matchedLead = leadsMap.get(fromEmail);
           if (matchedLead) {
-            // Check if this reply already exists in the database (within last 7 days + same subject)
-            const emailCheck = await pool.query(
-              "SELECT id FROM emails WHERE user_id = $1 AND from_email = $2 AND subject = $3 AND time_received > NOW() - INTERVAL '7 days'",
-              [userId, fromEmail, subject]
-            );
+            const messageId = message.envelope.messageId || null;
+            // Check if this reply already exists in the database (by messageId or subject+fromEmail)
+            let emailCheck;
+            if (messageId) {
+              emailCheck = await pool.query(
+                "SELECT id FROM emails WHERE user_id = $1 AND message_id = $2",
+                [userId, messageId]
+              );
+            } else {
+              emailCheck = await pool.query(
+                "SELECT id FROM emails WHERE user_id = $1 AND from_email = $2 AND subject = $3 AND time_received > NOW() - INTERVAL '7 days'",
+                [userId, fromEmail, subject]
+              );
+            }
 
             if (emailCheck.rowCount === 0) {
               console.log(`[EMAIL AGENT] [SYNC] User ${userId}: Found new reply from ${matchedLead.name} (${fromEmail})!`);
@@ -6934,12 +6991,21 @@ async function syncUserInbox(userId, config) {
               // Classify the incoming email category using AI
               const detectedCategory = await classifyIncomingEmail(bodyPreview, subject, config, userId);
 
-              // Insert email reply record in emails table with the detected category
-              const insertedEmail = await pool.query(
-                `INSERT INTO emails (from_name, from_email, company, subject, preview, time_received, is_read, category, labels, user_id)
-                 VALUES ($1, $2, $3, $4, $5, NOW(), FALSE, $6, ARRAY['inbox'], $7) RETURNING *`,
-                [matchedLead.name, fromEmail, matchedLead.name, subject, bodyPreview, detectedCategory, userId]
-              );
+              // Insert email reply record in emails table with the detected category and message_id
+              let insertedEmail;
+              try {
+                insertedEmail = await pool.query(
+                  `INSERT INTO emails (from_name, from_email, company, subject, preview, time_received, is_read, category, labels, user_id, message_id)
+                   VALUES ($1, $2, $3, $4, $5, NOW(), FALSE, $6, ARRAY['inbox'], $7, $8) RETURNING *`,
+                  [matchedLead.name, fromEmail, matchedLead.name, subject, bodyPreview, detectedCategory, userId, messageId]
+                );
+              } catch (insertErr) {
+                if (insertErr.code === '23505') {
+                  console.log(`[EMAIL AGENT] [SYNC] User ${userId}: Duplicate message detected via unique constraint (23505). Skipping.`);
+                  continue;
+                }
+                throw insertErr;
+              }
 
               // ── AUTO-REPLY / SPAM DETECTION ──
               const detectAutoReplyEnabled = config.auto_detect_auto_reply !== false;
