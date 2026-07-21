@@ -6,6 +6,9 @@ function EmailComposer({ lead, settings, onClose, onSent, showToast }) {
   const [body, setBody]         = useState("");
   const [generating, setGen]    = useState(false);
   const [sending, setSending]   = useState(false);
+  const [thinking, setThinking] = useState("");
+  const [versions, setVersions] = useState(null);
+  const [activeTab, setActiveTab] = useState("thinking"); // "thinking" | "versions"
   const generated = useRef(false);
 
   useEffect(() => {
@@ -17,11 +20,15 @@ function EmailComposer({ lead, settings, onClose, onSent, showToast }) {
     try {
       const pitchOfferLabel = {
         whatsapp_bot: "WhatsApp booking bot", website_dev: "website design",
-        ai_chatbot: "AI chatbot", custom: settings.customOfferDetails || "custom service",
+        ai_chatbot: "AI chatbot", custom: "Custom Tailored Service",
       }[settings.pitchOffer] || settings.pitchOffer;
 
+      const customOfferContext = settings.pitchOffer === "custom" && settings.customOfferDetails
+        ? `\n- Custom Pitch Context (Use this to understand the specific service you offer): ${settings.customOfferDetails}`
+        : "";
+
       const prompt = `You are ${settings.senderName || "a developer"} (${settings.senderRole || "developer"}${settings.companyName ? ` at ${settings.companyName}` : ""}).
-Write a highly personalized cold outreach email to a business owner.
+Write a highly personalized, custom cold outreach campaign tailored specifically for this lead. Do NOT use templates or fixed structures.
 
 Business Info:
 - Name: ${lead.name}
@@ -31,21 +38,53 @@ Business Info:
 - Website: ${lead.website || "None"}
 - Website Status: ${lead.website_status || "unknown"}
 - Instagram: ${lead.instagram || "None"}
+- Existing Icebreaker: ${lead.personalized_icebreaker || "None"}
 
-You are pitching: ${pitchOfferLabel}
-Tone: ${settings.outreachStyle || "casual"}, warm, direct.
+You are pitching: ${pitchOfferLabel}${customOfferContext}
+User-selected campaign context:
+- Target niche selected by user: ${settings.niche || lead.type || "unknown"}
+- Target location selected by user: ${settings.location || lead.city || "unknown"}
+- Sender location: ${settings.senderLocation || "remote / online"}
+Tone: ${settings.outreachStyle || "casual"}, warm, direct, conversational, human.
 Bio context: ${settings.aboutText || "local developer helping businesses grow"}
 ${settings.workSamples ? `Work samples: ${settings.workSamples}` : ""}
 
-Rules & High-Converting Pitch Guidelines:
-- Start with "Subject: " on line 1 (Make it short, lowercase, and casual, e.g. "quick query" or "website feedback")
-- Then a blank line
-- Then the email body (Maximum 100-120 words. Use 3 short paragraphs of 1-2 sentences each).
-- First sentence hook: Reference their actual business directly. Never say "My name is" or "Hope you are doing well". Start with something like "Hey, I came across ${lead.name} on Google Maps..." or "Hey, I was looking at your rating (${lead.rating}⭐)..."
-- No sales hype or buzzwords. Keep it grounded, direct, and conversational.
-- Low-Friction Call-To-Action (CTA): Do NOT ask for a call or meeting. Instead, ask for simple permission to show them something: "Mind if I send over a quick 30-second screenshot/preview showing how we fix this?" or "Would you be open to seeing a quick concept I put together for you?"
-- Do NOT use placeholders or brackets.
-- End with your signature: Cheers, ${settings.senderName || "Developer"}`;
+BANNED PHRASES: Do NOT use phrases like "Hope you're doing well", "I came across your website", "Just checking in", "Wanted to reach out", "We are the best", "Industry-leading", "Revolutionary", "Game changer", "Guaranteed", "World class".
+
+PITCH STRATEGY RULES:
+- Do not pitch from a fixed template. First infer the industry, customer journey, likely buyer pain, and best matching business outcome from the selected campaign context and this lead's data.
+- If the user selected a preset offer, translate it into the lead's industry language. For example, a booking bot means fewer missed reservations for cafes, fewer missed appointment requests for salons/clinics, faster quote capture for home services, and instant FAQ handling for gyms or studios.
+- If the user selected a custom offer, treat the custom text as strategic context, not copy. Extract the core result, ideal customer, pain point, and proof angle, then rewrite it naturally for this exact lead.
+- Use the user's work samples only when relevant. If no work sample matches, refer to experience generally and do not invent a case study.
+- Use the existing icebreaker if it is specific and useful. If it is generic, create a stronger one from the lead's rating, reviews, niche, location, website status, social profile, or missing booking/contact flow.
+- If sender location differs from lead location, never claim local/in-person familiarity. Use online research wording.
+- The pitch must answer: why this business, why this offer, why now, and what low-friction next step makes sense.
+
+AI THINKING STEP-BY-STEP PROCESS:
+1. Identify what the company actually does, their target customers, and brand positioning.
+2. Infer the best industry-specific pitch angle from selected offer/custom offer + selected niche/location + the lead's actual data.
+3. Find a genuine personalized icebreaker based on their existing icebreaker, rating, location, niche, website status, or social profile (never generic compliments like "I love your website").
+4. Identify specific opportunities/weaknesses (website down/missing, outdated mobile styling, slow loading, missing booking tools, manual FAQ processing) in a constructive, friendly way.
+5. Match relevant services that fit their business needs (don't force unrelated products).
+6. Explain the business outcome / value proposition in industry terms.
+7. Offer a low-friction call-to-action (CTA) e.g., asking for simple permission to show them a concept sketch, quick preview mockup, or 2-minute audit.
+
+Return a single JSON object with these EXACT keys:
+- "thinking": A brief paragraph detailing your step-by-step research answers (What they do, their customers, opportunities, matched service reason).
+- "subject": Short click-worthy personalized subject line (no generic or spam words).
+- "opening": Personalized opening sentence hook referring to their business directly.
+- "personalizedBody": Opportunity-focused paragraph explaining what can be improved.
+- "valueProposition": The business benefit/outcome of the matched service for them.
+- "cta": Low-pressure CTA (asking simple permission to show/send a quick concept preview).
+- "closing": Cheers, ${settings.senderName || "Developer"}${(settings.companyName) ? `\\n${settings.senderRole || "Developer"}\\n${settings.companyName}` : `\\n${settings.senderRole || "Developer"}`}
+- "followUp1": "Subject: [follow up subject]\\n\\n[A short, friendly follow-up email text sent 3 days later, referencing the previous idea and offering simple value or permission to share a mockup]"
+- "followUp2": "Subject: [follow up subject]\\n\\n[A short, conversational second follow-up text sent 7 days later, simple and low pressure]"
+- "linkedinConnection": "A short, friendly LinkedIn connection request message (max 300 characters, no sales pitch, just warm networking context)"
+- "linkedinFollowUp": "A short, conversational follow-up message to send once they accept the LinkedIn connection"
+- "shortVersion": "Subject: [short subject]\\n\\n[An ultra-concise email version under 60 words body]"
+- "longVersion": "Subject: [long subject]\\n\\n[A deconstructive, high-impact version under 150 words body]"
+
+Do NOT wrap the JSON inside markdown code blocks. Return a raw JSON string.`;
 
       const res = await fetch("/api/ai/generate", {
         method: "POST",
@@ -56,13 +95,18 @@ Rules & High-Converting Pitch Guidelines:
       if (res.ok) {
         const data = await res.json();
         const text = data.text || "";
-        const lines = text.split("\n");
-        if (lines[0]?.startsWith("Subject:")) {
-          setSubject(lines[0].replace("Subject:", "").trim());
-          setBody(lines.slice(2).join("\n").trim());
-        } else {
+        try {
+          const parsed = JSON.parse(text);
+          setThinking(parsed.thinking || "AI generated research details for this lead.");
+          const fullBody = `${parsed.opening}\n\n${parsed.personalizedBody}\n\n${parsed.valueProposition}\n\n${parsed.cta}\n\n${parsed.closing}`;
+          setSubject(parsed.subject || `Quick question about ${lead.name}`);
+          setBody(fullBody);
+          setVersions(parsed);
+        } catch (jsonErr) {
+          console.error("Failed to parse JSON response:", text);
           setSubject(`Quick question about ${lead.name}`);
           setBody(text.trim());
+          setThinking("Failed to parse structured AI intelligence. Raw email draft is shown.");
         }
       } else {
         showToast("AI generation failed. Write your email manually.", "warning");
@@ -116,44 +160,176 @@ Rules & High-Converting Pitch Guidelines:
     }
   }
 
+  function loadVersion(type) {
+    if (!versions) return;
+    if (type === "standard") {
+      const fullBody = `${versions.opening}\n\n${versions.personalizedBody}\n\n${versions.valueProposition}\n\n${versions.cta}\n\n${versions.closing}`;
+      setSubject(versions.subject || `Quick question about ${lead.name}`);
+      setBody(fullBody);
+    } else if (type === "followUp1") {
+      const parts = (versions.followUp1 || "").split("\n\n");
+      const sub = parts[0]?.startsWith("Subject:") ? parts[0].replace("Subject:", "").trim() : `Follow up: ${lead.name}`;
+      const bdy = parts[0]?.startsWith("Subject:") ? parts.slice(1).join("\n\n").trim() : versions.followUp1;
+      setSubject(sub);
+      setBody(bdy);
+    } else if (type === "followUp2") {
+      const parts = (versions.followUp2 || "").split("\n\n");
+      const sub = parts[0]?.startsWith("Subject:") ? parts[0].replace("Subject:", "").trim() : `Re: ${lead.name}`;
+      const bdy = parts[0]?.startsWith("Subject:") ? parts.slice(1).join("\n\n").trim() : versions.followUp2;
+      setSubject(sub);
+      setBody(bdy);
+    } else if (type === "linkedinConnection") {
+      setSubject("LinkedIn connection invitation context");
+      setBody(versions.linkedinConnection || "");
+    } else if (type === "linkedinFollowUp") {
+      setSubject("LinkedIn follow-up chat message");
+      setBody(versions.linkedinFollowUp || "");
+    } else if (type === "shortVersion") {
+      const parts = (versions.shortVersion || "").split("\n\n");
+      const sub = parts[0]?.startsWith("Subject:") ? parts[0].replace("Subject:", "").trim() : `Quick note: ${lead.name}`;
+      const bdy = parts[0]?.startsWith("Subject:") ? parts.slice(1).join("\n\n").trim() : versions.shortVersion;
+      setSubject(sub);
+      setBody(bdy);
+    } else if (type === "longVersion") {
+      const parts = (versions.longVersion || "").split("\n\n");
+      const sub = parts[0]?.startsWith("Subject:") ? parts[0].replace("Subject:", "").trim() : `Detailed overview: ${lead.name}`;
+      const bdy = parts[0]?.startsWith("Subject:") ? parts.slice(1).join("\n\n").trim() : versions.longVersion;
+      setSubject(sub);
+      setBody(bdy);
+    }
+    showToast(`Loaded ${type} copy into composer!`, "info");
+  }
+
   return (
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal modal-lg">
+      <div className="modal" style={{ maxWidth: "1150px", width: "95%" }}>
         <div className="modal-header">
           <div>
-            <div className="modal-title">✉ Draft Email — {lead.name}</div>
+            <div className="modal-title">✉ AI Outreach Intelligence Suite — {lead.name}</div>
             <div style={{ fontSize: 12, color: "var(--text-3)", marginTop: 2 }}>
               To: <span style={{ color: "var(--text-1)" }}>{lead.email || "No email"}</span>
             </div>
           </div>
           <button className="btn btn-ghost btn-icon" onClick={onClose}>✕</button>
         </div>
-        <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div className="modal-body" style={{ padding: "20px 24px" }}>
           {generating ? (
-            <div className="flex-center" style={{ flexDirection: "column", gap: 12, padding: "32px 0" }}>
+            <div className="flex-center" style={{ flexDirection: "column", gap: 12, padding: "48px 0" }}>
               <span className="spinner spinner-lg" />
-              <span style={{ color: "var(--text-3)", fontSize: 13 }}>AI is writing your personalized email...</span>
+              <span style={{ color: "var(--text-3)", fontSize: 13, fontWeight: 600 }}>Analyzing lead & generating custom campaigns...</span>
             </div>
           ) : (
-            <>
-              <div className="input-group">
-                <label className="input-label">Subject</label>
-                <input className="input" value={subject} onChange={e => setSubject(e.target.value)} />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1.2fr", gap: "24px", minHeight: "420px" }}>
+              
+              {/* Left Column: AI Research and Outreach Versions */}
+              <div style={{ display: "flex", flexDirection: "column", gap: "16px", borderRight: "1px solid var(--border-subtle)", paddingRight: "20px" }}>
+                <div style={{ display: "flex", gap: "6px", background: "var(--bg-translucent-mild)", padding: "4px", borderRadius: "8px" }}>
+                  <button 
+                    onClick={() => setActiveTab("thinking")}
+                    style={{
+                      flex: 1, padding: "6px 12px", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: 700,
+                      background: activeTab === "thinking" ? "var(--color-indigo)" : "transparent",
+                      color: activeTab === "thinking" ? "white" : "var(--text-secondary)",
+                      cursor: "pointer", transition: "all 0.2s"
+                    }}
+                  >
+                    🧠 AI Research & Thinking
+                  </button>
+                  <button 
+                    onClick={() => setActiveTab("versions")}
+                    style={{
+                      flex: 1, padding: "6px 12px", border: "none", borderRadius: "6px", fontSize: "12px", fontWeight: 700,
+                      background: activeTab === "versions" ? "var(--color-indigo)" : "transparent",
+                      color: activeTab === "versions" ? "white" : "var(--text-secondary)",
+                      cursor: "pointer", transition: "all 0.2s"
+                    }}
+                  >
+                    ⚡ Outreach Versions
+                  </button>
+                </div>
+
+                <div style={{ flex: 1, overflowY: "auto", maxHeight: "380px" }}>
+                  {activeTab === "thinking" ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                      <div className="badge" style={{ background: "rgba(99,102,241,0.06)", color: "var(--color-indigo)", alignSelf: "flex-start", fontSize: "10px" }}>
+                        Research Analysis
+                      </div>
+                      <div style={{ fontSize: "13px", lineHeight: "1.6", color: "var(--text-secondary)", background: "var(--bg-translucent-mild)", padding: "12px", borderRadius: "8px", border: "var(--border-subtle)" }}>
+                        {thinking}
+                      </div>
+                      <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "8px" }}>
+                        💡 This analysis is used to guarantee that every email generated is 100% unique, personalized, and avoids templates.
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                      <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "4px" }}>
+                        Click a button to load an alternative copy or follow-up sequence directly into the active composer.
+                      </div>
+                      {[
+                        { id: "standard", label: "Standard Outreach", icon: "📧" },
+                        { id: "followUp1", label: "Follow-up Email #1 (3 days)", icon: "⏰" },
+                        { id: "followUp2", label: "Follow-up Email #2 (7 days)", icon: "⏰" },
+                        { id: "linkedinConnection", label: "LinkedIn Invite (300 char)", icon: "💬" },
+                        { id: "linkedinFollowUp", label: "LinkedIn Follow-up", icon: "💬" },
+                        { id: "shortVersion", label: "Short Version (< 60 words)", icon: "⚡" },
+                        { id: "longVersion", label: "Long Version (< 150 words)", icon: "📝" },
+                      ].map((ver) => (
+                        <div 
+                          key={ver.id}
+                          style={{
+                            display: "flex", justifyContent: "space-between", alignItems: "center",
+                            background: "var(--bg-translucent-mild)", border: "var(--border-subtle)",
+                            padding: "10px 12px", borderRadius: "8px"
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                            <span style={{ fontSize: "16px" }}>{ver.icon}</span>
+                            <span style={{ fontSize: "12.5px", fontWeight: 600, color: "var(--text-primary)" }}>{ver.label}</span>
+                          </div>
+                          <button 
+                            className="btn btn-lime btn-sm" 
+                            style={{ padding: "4px 8px", fontSize: "11px" }}
+                            onClick={() => loadVersion(ver.id)}
+                            disabled={!versions}
+                          >
+                            ⚡ Load
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
-              <div className="input-group">
-                <label className="input-label">Body</label>
-                <textarea
-                  className="input"
-                  rows={12}
-                  value={body}
-                  onChange={e => setBody(e.target.value)}
-                  style={{ resize: "vertical", fontFamily: "var(--font)", fontSize: 13.5, lineHeight: 1.7 }}
-                />
+
+              {/* Right Column: Active Composer */}
+              <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+                <div className="input-group">
+                  <label className="input-label" style={{ fontWeight: 700 }}>Outreach Subject Line</label>
+                  <input className="input" value={subject} onChange={e => setSubject(e.target.value)} placeholder="Email subject..." />
+                </div>
+                <div className="input-group">
+                  <label className="input-label" style={{ fontWeight: 700 }}>Outreach Email Body</label>
+                  <textarea
+                    className="input"
+                    rows={12}
+                    value={body}
+                    onChange={e => setBody(e.target.value)}
+                    style={{ resize: "vertical", fontFamily: "var(--font)", fontSize: "13.5px", lineHeight: "1.7", minHeight: "260px" }}
+                    placeholder="Write or edit email content here..."
+                  />
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <button className="btn btn-ghost btn-sm" onClick={generateEmail}>
+                    ↺ Regenerate Outreach
+                  </button>
+                  <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                    Word Count: {body ? body.split(/\s+/).filter(Boolean).length : 0} words
+                  </span>
+                </div>
               </div>
-              <button className="btn btn-ghost btn-sm" style={{ alignSelf: "flex-start" }} onClick={generateEmail}>
-                ↺ Regenerate
-              </button>
-            </>
+
+            </div>
           )}
         </div>
         <div className="modal-footer">
@@ -163,7 +339,7 @@ Rules & High-Converting Pitch Guidelines:
             onClick={handleSend}
             disabled={sending || generating || !lead.email}
           >
-            {sending ? <><span className="spinner spinner-sm" /> Sending...</> : "🚀 Send Email"}
+            {sending ? <><span className="spinner spinner-sm" /> Sending...</> : "🚀 Send Outreach"}
           </button>
         </div>
       </div>
@@ -783,8 +959,40 @@ export default function LeadFinder({ leads, setLeads, settings, showToast }) {
     let sent = 0;
     for (const lead of targets) {
       try {
-        const pitchLabel = pitchOffer === "custom" ? customOfferText : ({ whatsapp_bot: "WhatsApp booking bot", website_dev: "website design", ai_chatbot: "AI chatbot" }[pitchOffer] || pitchOffer);
-        const prompt = `Write a short personalized cold email from ${settings.senderName || "a developer"} to ${lead.name} (${lead.type} in ${lead.city}, ${lead.rating}⭐). Pitch: ${pitchLabel}. Website status: ${lead.website_status || "unknown"}. Keep it under 120 words. Format: Subject: [subject]\n\n[body]`;
+        const isCustom = pitchOffer === "custom";
+        const pitchLabel = isCustom ? "Custom Tailored Service" : ({ whatsapp_bot: "WhatsApp booking bot", website_dev: "website design", ai_chatbot: "AI chatbot" }[pitchOffer] || pitchOffer);
+        const customOfferContext = isCustom && customOfferText
+          ? `\nCustom Pitch Context (Use this to understand the specific service you offer): ${customOfferText}`
+          : "";
+
+        const prompt = `You are ${settings.senderName || "a developer"}. Write a highly personalized short cold outreach email to ${lead.name} (${lead.type} in ${lead.city}, Google rating: ${lead.rating}⭐).
+Pitch offer: ${pitchLabel}.${customOfferContext}
+Website status: ${lead.website_status || "unknown"}.
+Existing icebreaker: ${lead.personalized_icebreaker || "None"}.
+User-selected campaign context:
+- Target niche: ${niche || settings.niche || lead.type || "unknown"}
+- Target locations: ${locations.join(", ") || settings.location || lead.city || "unknown"}
+- Sender name/role/company: ${settings.senderName || "Developer"} / ${settings.senderRole || "Developer"} / ${settings.companyName || "Independent"}
+- Sender location: ${settings.senderLocation || "remote / online"}
+- Sender bio: ${settings.aboutText || "Not provided"}
+- Work samples: ${settings.workSamples || "None"}
+Keep it under 120 words.
+
+HIGH-CONVERTING OUTREACH HOOK TEMPLATES & STYLES (Choose one of these 5 hook styles dynamically to make the email unique):
+1. Problem-Based Hook (Subject: Quick idea about [Business Name])
+2. Observation Hook (Subject: One thing I noticed on [Business Name] or Custom web experience for [Business Name])
+3. Curiosity Hook (Subject: Curious question or Question for [Business Name])
+4. ROI Hook (Subject: Saving hours at [Business Name] or Saving engineering time)
+5. Soft Value Hook (Subject: If development/updates are on [Business Name]'s roadmap...)
+
+Rules:
+- First sentence hook: Reference the business directly (e.g. "I spent a few minutes looking through ${lead.name} and..." or "I noticed ${lead.name}'s listing..."). Never use generic greetings.
+- Subject Line: MUST be highly click-worthy, brief, and personalized (e.g. "Custom web experience for ${lead.name}" or "Quick idea about ${lead.name}").
+- Custom Pitch Offer Rule: If a custom service is specified, do NOT copy and paste the custom service description text verbatim. Instead, treat it as context explaining what you offer. Write a highly personalized, natural, and compelling pitch block tailored specifically for ${lead.name} based on that service.
+- Strategy Rule: Before writing, infer the industry-specific buyer pain and business outcome from the selected offer/custom offer, selected niche/location, sender profile, work samples, and this lead's signals. Translate the offer into that industry's language instead of using generic SaaS or developer wording.
+- Icebreaker Rule: Use the existing icebreaker if it is strong and specific; otherwise create a better one from rating, reviews, website status, social profile, city, niche, or missing booking/contact flow.
+- Proof Rule: Use work samples only when they clearly fit this lead's industry or problem. Do not invent proof, numbers, visits, or local familiarity.
+- Format: Start with "Subject: " on line 1, then a blank line, then the email body.`;
         const aiRes = await fetch("/api/ai/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt }), signal: AbortSignal.timeout(35000) });
         if (!aiRes.ok) continue;
         const { text } = await aiRes.json();

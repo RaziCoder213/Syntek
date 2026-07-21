@@ -1,11 +1,5 @@
 import { useState, useEffect } from "react";
 
-const SYSTEM_TEMPLATES = [
-  { id: 1, name: "AI Reservation Automation Pitch", tone: "ROI-Focused", body: "Subject: quick question about {{company}}\n\nHi team at {{company}},\n\nI noticed you have a stellar {{rating}}⭐ rating with {{reviews}} reviews in {{city}}! You must get slammed with reservations and customer calls.\n\nI'm Muhammad Razi, a local independent developer. I design simple custom AI agents that automate reservation scheduling and WhatsApp/IG DMs, saving 2-3 hours daily for Cafe owners.\n\nWould you be open to a quick 10-minute preview this week?\n\nBest,\nMuhammad Razi\nIndependent Developer" },
-  { id: 2, name: "Casual Local Intro", tone: "Friendly", body: "Subject: local developer inquiry / {{company}}\n\nHey there,\n\nI'm Muhammad Razi, an independent web developer. I was scanning top cafes in {{city}} and {{company}} immediately stood out! Love what you guys are doing.\n\nI help restaurants automate their customer messages and WhatsApp replies so you never miss a review inquiry or booking request again. Do you have 10 minutes this Thursday for a casual chat?\n\nCheers,\nMuhammad Razi" },
-  { id: 3, name: "Direct Message Automator", tone: "Direct", body: "Subject: feedback on {{company}}'s DMs?\n\nHi,\n\nQuick question: Who handles the social media booking inquiries for {{company}}?\n\nI'm a local developer and I build custom AI chat agents that reply to Instagram & Facebook DMs instantly, booking tables automatically without human staff lifting a finger.\n\nAre you free for a 5-minute call tomorrow?\n\nThanks,\nMuhammad Razi" }
-];
-
 export default function Campaigns({ 
   leads, 
   setLeads, 
@@ -47,6 +41,8 @@ export default function Campaigns({
   const [newTemplateName, setNewTemplateName] = useState("");
   const [newTemplateSenderType, setNewTemplateSenderType] = useState("all");
   const [savingTemplate, setSavingTemplate] = useState(false);
+  const [campVersions, setCampVersions] = useState(null);
+  const [campThinking, setCampThinking] = useState("");
 
   const activeLeadId = selectedLeadId || (leads[0] ? leads[0].id.toString() : "");
 
@@ -318,17 +314,20 @@ export default function Campaigns({
   };
 
   const getSimulatedOutreach = (lead, tone) => {
-    const s = `Subject: quick question about ${lead.name}\n\n`;
-    const greeting = tone === "Friendly" ? `Hey, ${senderName} here,` : `Hi Team,`;
+    const templateIndex = Math.abs(lead.name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)) % 5;
     const identity = (useCompanyBranding && companyName) ? `${senderRole} at ${companyName}` : senderRole;
     const signature = (useCompanyBranding && companyName) ? `${senderName}\n${senderRole}\n${companyName}` : `${senderName}\n${senderRole}`;
-    
-    if (tone === "Friendly") {
-      return s + `${greeting}\n\nI stumbled upon ${lead.name} in ${lead.city} while researching top local spots. With an amazing ${lead.rating}⭐ rating across ${lead.reviews} reviews, you guys are absolutely killing it!\n\nI'm a ${identity.toLowerCase()} and I build custom AI agents that automate customer inquiries across WhatsApp and Instagram DMs, ensuring you book 20% more tables without staff lifting a finger.\n\nWould you be open to a casual 10-minute check sometime this week?\n\nBest,\n${signature}`;
-    } else if (tone === "ROI-Focused") {
-      return s + `${greeting}\n\nI wanted to share a quick estimate: based on your ${lead.reviews} Google reviews in ${lead.city}, my model predicts you are losing up to $1,500 monthly in unreplied booking inquiries on social media.\n\nI design conversational AI agents that automate 85% of standard reservation FAQs instantly. Let's schedule a 10-minute review to see if we can reclaim those lost bookings.\n\nRegards,\n${signature}`;
+
+    if (templateIndex === 0) {
+      return `Subject: Quick idea about ${lead.name}\n\nHi,\n\nI came across ${lead.name} and noticed a few opportunities where your website or reservation experience could be improved.\n\nMany local businesses lose customers because of slow response times, manual processes, or outdated layouts. I help owners fix exactly those problems by building scalable web applications and automated reservation systems.\n\nWould you be open to a quick conversation to see if there are any easy wins for ${lead.name}?\n\nBest,\n${signature}`;
+    } else if (templateIndex === 1) {
+      return `Subject: One thing I noticed on ${lead.name}\n\nHi,\n\nI spent a few minutes looking through ${lead.name} and one thing immediately stood out. With your great ${lead.rating}⭐ rating on Google, a lot of new customers must be finding you online every day.\n\nI build custom web applications, SaaS platforms, and AI booking tools that help popular businesses convert that search traffic into bookings and sales automatically.\n\nHappy to share a few ideas if you're interested.\n\nThanks,\n${signature}`;
+    } else if (templateIndex === 2) {
+      return `Subject: Curious question\n\nHi,\n\nQuick question — are you currently planning to build any new digital features/bookings this quarter, or are you mostly focused on your current setup?\n\nI ask because I help startups and local businesses like ${lead.name} implement custom reservation systems, websites, and chat automations without the cost of a full-time engineering team.\n\nWould love to learn what you're working on.\n\nRegards,\n${signature}`;
+    } else if (templateIndex === 3) {
+      return `Subject: Saving time at ${lead.name}\n\nHi,\n\nOne of the biggest challenges I see with popular businesses like ${lead.name} is getting reservation inquiries and website updates handled quickly without slowing down your day-to-day operations.\n\nI help founders and owners save hours by building scalable web platforms and automated messaging setups.\n\nIf you ever need an experienced development partner, I'd be happy to chat.\n\nBest,\n${signature}`;
     } else {
-      return s + `${greeting}\n\nI build custom AI chatbots specifically tailored for ${lead.type} businesses like ${lead.name}.\n\nBy connecting directly to your bookings software, my AI agents book tables, answer FAQs, and reply to Instagram messages instantly. Setup takes less than 24 hours.\n\nLet me know if you're free for a quick Zoom call this Thursday.\n\nThanks,\n${signature}`;
+      return `Subject: If web/booking updates are on your roadmap...\n\nHi,\n\nIf expanding your digital presence or adding new features/booking systems is on your roadmap this year, I'd love to introduce myself.\n\nI help businesses like ${lead.name} build custom websites, dashboards, and automated reservation bots from idea to launch.\n\nIf that's something you anticipate needing, I'd be happy to discuss how I could help.\n\nBest regards,\n${signature}`;
     }
   };
 
@@ -342,47 +341,79 @@ export default function Campaigns({
     setAiLoading(true);
     setGeneratedSubject("");
     setGeneratedBody("");
+    setCampVersions(null);
+    setCampThinking("");
 
     const signature = (useCompanyBranding && companyName) ? `${senderName}\n${senderRole}\n${companyName}` : `${senderName}\n${senderRole}`;
 
-    const promptText = `
-      Create a highly personalized cold outreach email to a business owner.
-      
-      Sender Profile Context:
-      - Account Type: ${senderType}
-      - Sender Bio / Brand Description: ${aboutText}
-      - Sender Portfolio Website: ${portfolioUrl || "None"}
-      - Sender Social Media: LinkedIn: ${socialLinkedin || "None"}, GitHub: ${socialGithub || "None"}, Twitter: ${socialTwitter || "None"}
-      - Branding Images: Logo URL: ${logoUrl || "None"}, Banner URL: ${bannerUrl || "None"}, Profile Icon URL: ${profileIconUrl || "None"}
- 
-      Business details:
-      - Name: ${lead.name}
-      - Niche Category: ${lead.type}
-      - Location: ${lead.city}
-      - Google Rating: ${lead.rating} out of 5 stars
-      - Reviews Count: ${lead.reviews}
-      - Instagram handle: ${lead.instagram || "None"}
-      - Website: ${lead.website || "None"}
-      - Website Status: ${lead.website_status || "unknown"} (can be "active", "no_website", or "down")
-      
-      Outreach Guidelines:
-      - Tone: ${selectedTone}
-      - Copywriting Angle Style: ${outreachStyle === "roi" ? "ROI-Focused" : outreachStyle === "feedback" ? "Opinion/Feedback on Google Reviews/Ratings" : outreachStyle === "direct" ? "Pre-built Custom AI Chatbot Prototype Preview" : "Casual & Friendly Tech Pitch"}
-      - Core Pitch Offer: ${pitchOffer === "whatsapp_bot" ? "Automating customer bookings, reservation FAQs, and Instagram/WhatsApp messages using custom conversational AI agents." : pitchOffer === "website_dev" ? "Designing and developing modern, responsive high-performing websites to capture traffic." : pitchOffer === "ai_chatbot" ? "Building custom AI chatbot assistants that reply to inquiries instantly on Google Maps/IG." : customOfferDetails}
-      - Personalization Rules:
-        - Incorporate sender's bio context ("${aboutText}") to state why you are reaching out and highlight relevant skills/background.
-        - If a portfolio URL (${portfolioUrl}) or social links (like GitHub ${socialGithub} or LinkedIn ${socialLinkedin}) are provided, naturally mention them to build high credibility.
-        - If pitching website design/development (website_dev):
-          - If Website Status is "no_website", pitch why a website helps capture local search traffic.
-          - If Website Status is "down", offer to help fix or rebuild their broken site.
-          - If Website Status is "active", suggest subtle improvements.
-      - Call to Action: Friendly, low-friction request. Do NOT ask for a call or meeting. Instead, ask for simple permission to show them something: "Mind if I send over a quick 30-second screenshot/preview showing how we fix this?" or "Would you be open to seeing a quick concept I put together for you?"
-      - Signature: Use exactly this signature:
-        Cheers,
-        ${signature}
-      - Instructions: Keep it casual, brief (max 100-120 words), and highly compelling. Never sound like a spammy sales script. Reference their business directly in the very first sentence without generic greetings. No sales hype or buzzwords.
-      - Format: Output ONLY the email. Start with a "Subject: " line on the first line, then a blank line, and then the email body. Use short lowercase click-worthy subject lines.
-    `;
+    const pitchOfferLabel = {
+      whatsapp_bot: "WhatsApp booking bot", website_dev: "website design",
+      ai_chatbot: "AI chatbot", custom: "Custom Tailored Service",
+    }[pitchOffer] || pitchOffer;
+
+    const customOfferContext = pitchOffer === "custom" && customOfferDetails
+      ? `\n- Custom Pitch Context (Use this to understand the specific service you offer): ${customOfferDetails}`
+      : "";
+
+    const promptText = `You are ${senderName}, working as "${senderRole}"${(useCompanyBranding && companyName) ? ` at ${companyName}` : ""}.
+Write a highly personalized, custom cold outreach campaign tailored specifically for this lead. Do NOT use templates or fixed structures.
+
+Business Info:
+- Name: ${lead.name}
+- Type: ${lead.type}
+- City: ${lead.city}
+- Rating: ${lead.rating} ⭐ (${lead.reviews} reviews)
+- Website: ${lead.website || "None"}
+- Website Status: ${lead.website_status || "unknown"}
+- Instagram: ${lead.instagram || "None"}
+- Existing Icebreaker: ${lead.personalized_icebreaker || "None"}
+
+You are pitching: ${pitchOfferLabel}${customOfferContext}
+User-selected campaign context:
+- Target niche inferred from selected lead: ${lead.type || "unknown"}
+- Target location inferred from selected lead: ${lead.city || "unknown"}
+- Sender type: ${senderType}
+- Portfolio: ${portfolioUrl || "None"}
+- Social proof links: LinkedIn ${socialLinkedin || "None"}, GitHub ${socialGithub || "None"}, Twitter ${socialTwitter || "None"}
+Tone: ${selectedTone}, warm, direct, conversational, human.
+Bio context: ${aboutText || "local developer helping businesses grow"}
+${workSamples ? `Work samples: ${workSamples}` : ""}
+
+BANNED PHRASES: Do NOT use phrases like "Hope you're doing well", "I came across your website", "Just checking in", "Wanted to reach out", "We are the best", "Industry-leading", "Revolutionary", "Game changer", "Guaranteed", "World class".
+
+PITCH STRATEGY RULES:
+- Do not pitch from a fixed template. First infer the industry, customer journey, likely buyer pain, and best matching business outcome from the selected offer/custom offer and this lead's data.
+- If the user selected a preset offer, translate it into the lead's industry language. For example, a booking bot means fewer missed reservations for cafes, fewer missed appointment requests for salons/clinics, faster quote capture for home services, and instant FAQ handling for gyms or studios.
+- If the user selected a custom offer, treat the custom text as strategic context, not copy. Extract the core result, ideal customer, pain point, and proof angle, then rewrite it naturally for this exact lead.
+- Use the user's work samples only when relevant. If no work sample matches, refer to experience generally and do not invent a case study.
+- Use the existing icebreaker if it is specific and useful. If it is generic, create a stronger one from the lead's rating, reviews, niche, location, website status, social profile, or missing booking/contact flow.
+- The pitch must answer: why this business, why this offer, why now, and what low-friction next step makes sense.
+
+AI THINKING STEP-BY-STEP PROCESS:
+1. Identify what the company actually does, their target customers, and brand positioning.
+2. Infer the best industry-specific pitch angle from selected offer/custom offer + the lead's actual data.
+3. Find a genuine personalized icebreaker based on their existing icebreaker, rating, location, niche, website status, or social profile (never generic compliments like "I love your website").
+4. Identify specific opportunities/weaknesses (website down/missing, outdated mobile styling, slow loading, missing booking tools, manual FAQ processing) in a constructive, friendly way.
+5. Match relevant services that fit their business needs (don't force unrelated products).
+6. Explain the business outcome / value proposition in industry terms.
+7. Offer a low-friction call-to-action (CTA) e.g., asking for simple permission to show them a concept sketch, quick preview mockup, or 2-minute audit.
+
+Return a single JSON object with these EXACT keys:
+- "thinking": A brief paragraph detailing your step-by-step research answers (What they do, their customers, opportunities, matched service reason).
+- "subject": Short click-worthy personalized subject line (no generic or spam words).
+- "opening": Personalized opening sentence hook referring to their business directly.
+- "personalizedBody": Opportunity-focused paragraph explaining what can be improved.
+- "valueProposition": The business benefit/outcome of the matched service for them.
+- "cta": Low-pressure CTA (asking simple permission to show/send a quick concept preview).
+- "closing": Cheers, ${senderName}${(companyName) ? `\\n${senderRole}\\n${companyName}` : `\\n${senderRole}`}
+- "followUp1": "Subject: [follow up subject]\\n\\n[A short, friendly follow-up email text sent 3 days later, referencing the previous idea and offering simple value or permission to share a mockup]"
+- "followUp2": "Subject: [follow up subject]\\n\\n[A short, conversational second follow-up text sent 7 days later, simple and low pressure]"
+- "linkedinConnection": "A short, friendly LinkedIn connection request message (max 300 characters, no sales pitch, just warm networking context)"
+- "linkedinFollowUp": "A short, conversational follow-up message to send once they accept the LinkedIn connection"
+- "shortVersion": "Subject: [short subject]\\n\\n[An ultra-concise email version under 60 words body]"
+- "longVersion": "Subject: [long subject]\\n\\n[A deconstructive, high-impact version under 150 words body]"
+
+Do NOT wrap the JSON inside markdown code blocks. Return a raw JSON string.`;
 
     try {
       const response = await fetch("/api/ai/generate", {
@@ -397,15 +428,20 @@ export default function Campaigns({
       const data = await response.json();
       const fullResponse = data.text || "";
       
-      if (fullResponse.startsWith("Subject:")) {
-        const split = fullResponse.split("\n\n");
-        setGeneratedSubject(split[0].replace("Subject:", "").trim());
-        setGeneratedBody(split.slice(1).join("\n\n").trim());
-      } else {
+      try {
+        const parsed = JSON.parse(fullResponse);
+        setCampThinking(parsed.thinking || "AI generated research details for this lead.");
+        const fullBody = `${parsed.opening}\n\n${parsed.personalizedBody}\n\n${parsed.valueProposition}\n\n${parsed.cta}\n\n${parsed.closing}`;
+        setGeneratedSubject(parsed.subject || `Quick question about ${lead.name}`);
+        setGeneratedBody(fullBody);
+        setCampVersions(parsed);
+        showToast("Email draft generated successfully!", "success");
+      } catch (jsonErr) {
+        console.error("Failed to parse JSON response:", fullResponse);
         setGeneratedSubject(`Custom Outreach for ${lead.name}`);
         setGeneratedBody(fullResponse);
+        setCampThinking("Failed to parse structured AI intelligence. Raw email draft is shown.");
       }
-      showToast("Email draft generated successfully!", "success");
     } catch (err) {
       console.error(err);
       showToast("AI connection error. Using local fallback.", "warn");
@@ -646,6 +682,77 @@ export default function Campaigns({
                   </div>
                 ) : (
                   <>
+                    {campThinking && (
+                      <div style={{ background: "rgba(99, 102, 241, 0.05)", border: "1px solid rgba(99, 102, 241, 0.15)", borderRadius: "8px", padding: "12px", fontSize: "12px", color: "var(--text-secondary)" }}>
+                        <div style={{ fontWeight: 700, color: "var(--color-indigo)", display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+                          <span>🧠</span> AI Research & Strategy Analysis:
+                        </div>
+                        <div>{campThinking}</div>
+                      </div>
+                    )}
+
+                    {campVersions && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "4px" }}>
+                        {[
+                          { id: "standard", label: "📧 Standard" },
+                          { id: "followUp1", label: "⏰ Follow-up #1" },
+                          { id: "followUp2", label: "⏰ Follow-up #2" },
+                          { id: "linkedinConnection", label: "💬 LI Invite" },
+                          { id: "linkedinFollowUp", label: "💬 LI Follow-up" },
+                          { id: "shortVersion", label: "⚡ Short" },
+                          { id: "longVersion", label: "📝 Long" },
+                        ].map((v) => (
+                          <button
+                            key={v.id}
+                            className="btn btn-ghost btn-sm"
+                            style={{ padding: "4px 8px", fontSize: "11px", border: "1px solid var(--border-subtle)", borderRadius: "6px" }}
+                            onClick={() => {
+                              const lead = leads.find(l => l.id.toString() === activeLeadId);
+                              if (!lead) return;
+                              if (v.id === "standard") {
+                                const fullBody = `${campVersions.opening}\n\n${campVersions.personalizedBody}\n\n${campVersions.valueProposition}\n\n${campVersions.cta}\n\n${campVersions.closing}`;
+                                setGeneratedSubject(campVersions.subject || `Quick question about ${lead.name}`);
+                                setGeneratedBody(fullBody);
+                              } else if (v.id === "followUp1") {
+                                const parts = (campVersions.followUp1 || "").split("\n\n");
+                                const sub = parts[0]?.startsWith("Subject:") ? parts[0].replace("Subject:", "").trim() : `Follow up: ${lead.name}`;
+                                const bdy = parts[0]?.startsWith("Subject:") ? parts.slice(1).join("\n\n").trim() : campVersions.followUp1;
+                                setGeneratedSubject(sub);
+                                setGeneratedBody(bdy);
+                              } else if (v.id === "followUp2") {
+                                const parts = (campVersions.followUp2 || "").split("\n\n");
+                                const sub = parts[0]?.startsWith("Subject:") ? parts[0].replace("Subject:", "").trim() : `Re: ${lead.name}`;
+                                const bdy = parts[0]?.startsWith("Subject:") ? parts.slice(1).join("\n\n").trim() : campVersions.followUp2;
+                                setGeneratedSubject(sub);
+                                setGeneratedBody(bdy);
+                              } else if (v.id === "linkedinConnection") {
+                                setGeneratedSubject("LinkedIn connection invitation context");
+                                setGeneratedBody(campVersions.linkedinConnection || "");
+                              } else if (v.id === "linkedinFollowUp") {
+                                setGeneratedSubject("LinkedIn follow-up chat message");
+                                setGeneratedBody(campVersions.linkedinFollowUp || "");
+                              } else if (v.id === "shortVersion") {
+                                const parts = (campVersions.shortVersion || "").split("\n\n");
+                                const sub = parts[0]?.startsWith("Subject:") ? parts[0].replace("Subject:", "").trim() : `Quick note: ${lead.name}`;
+                                const bdy = parts[0]?.startsWith("Subject:") ? parts.slice(1).join("\n\n").trim() : campVersions.shortVersion;
+                                setGeneratedSubject(sub);
+                                setGeneratedBody(bdy);
+                              } else if (v.id === "longVersion") {
+                                const parts = (campVersions.longVersion || "").split("\n\n");
+                                const sub = parts[0]?.startsWith("Subject:") ? parts[0].replace("Subject:", "").trim() : `Detailed overview: ${lead.name}`;
+                                const bdy = parts[0]?.startsWith("Subject:") ? parts.slice(1).join("\n\n").trim() : campVersions.longVersion;
+                                setGeneratedSubject(sub);
+                                setGeneratedBody(bdy);
+                              }
+                              showToast(`Loaded ${v.label} draft!`, "info");
+                            }}
+                          >
+                            {v.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
                     <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
                       <label style={{ fontSize: "10px", color: "var(--text-muted)", fontWeight: 700 }}>EMAIL SUBJECT</label>
                       <input 
@@ -665,7 +772,7 @@ export default function Campaigns({
                       />
                     </div>
                     <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
-                      <button className="btn btn-outline btn-sm" onClick={() => { setGeneratedSubject(""); setGeneratedBody(""); }}>Discard</button>
+                      <button className="btn btn-outline btn-sm" onClick={() => { setGeneratedSubject(""); setGeneratedBody(""); setCampVersions(null); setCampThinking(""); }}>Discard</button>
                       <button className="btn btn-lime btn-sm" onClick={sendGeneratedEmail}>📧 Send Email via SMTP</button>
                     </div>
                   </>
@@ -682,37 +789,14 @@ export default function Campaigns({
               <h3 style={{ fontSize: "15px", fontWeight: 800, color: "var(--text-primary)" }}>📋 Templates Library</h3>
               
               <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                <span style={{ fontSize: "10px", fontWeight: 700, color: "var(--color-indigo)", letterSpacing: "0.05em" }}>System Default Templates</span>
-                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                  {SYSTEM_TEMPLATES.map((tmpl) => (
-                    <div 
-                      key={`sys-${tmpl.id}`}
-                      onClick={() => handleSelectTemplate(tmpl)}
-                      style={{
-                        padding: "8px 12px",
-                        borderRadius: "6px",
-                        background: "var(--bg-translucent-mild)",
-                        border: "var(--border-subtle)",
-                        cursor: "pointer",
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center"
-                      }}
-                      className="sidebar-nav-btn"
-                    >
-                      <div>
-                        <span style={{ fontSize: "12px", fontWeight: 700, color: "var(--text-primary)", display: "block" }}>{tmpl.name}</span>
-                        <span style={{ fontSize: "9px", color: "var(--text-muted)" }}>Tone: {tmpl.tone}</span>
-                      </div>
-                      <span className="badge" style={{ background: "rgba(99,102,241,0.06)", color: "var(--color-indigo)", fontSize: "9px" }}>System</span>
-                    </div>
-                  ))}
-                </div>
-
-                {customTemplates.length > 0 && (
+                {customTemplates.length === 0 ? (
+                  <span style={{ fontSize: "12px", color: "var(--text-muted)", fontStyle: "italic" }}>
+                    No custom templates saved yet. Save a generated draft to library to reuse it.
+                  </span>
+                ) : (
                   <>
-                    <span style={{ fontSize: "10px", fontWeight: 700, color: "var(--color-lime)", letterSpacing: "0.05em", marginTop: "12px" }}>My Custom Templates</span>
-                    <div style={{ display: "flex", flexDirection: "column", gap: "6px", maxHeight: "140px", overflowY: "auto" }}>
+                    <span style={{ fontSize: "10px", fontWeight: 700, color: "var(--color-lime)", letterSpacing: "0.05em" }}>My Custom Templates</span>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px", maxHeight: "180px", overflowY: "auto" }}>
                       {customTemplates.map((tmpl) => (
                         <div 
                           key={`custom-${tmpl.id}`}
