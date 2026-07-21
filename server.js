@@ -3262,6 +3262,35 @@ app.post("/api/emails/:id/generate-reply", authenticate, async (req, res) => {
   }
 });
 
+let cachedNgrokUrl = null;
+async function getDynamicBaseUrl(req) {
+  if (req) {
+    const host = req.headers.host || "localhost:5000";
+    const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+    return process.env.APP_URL || `${protocol}://${host}`;
+  }
+
+  if (process.env.APP_URL) {
+    return process.env.APP_URL;
+  }
+
+  try {
+    const res = await fetch("http://127.0.0.1:4040/api/tunnels");
+    if (res.ok) {
+      const data = await res.json();
+      const publicTunnel = data.tunnels?.find(t => t.proto === 'https' || t.proto === 'http');
+      if (publicTunnel && publicTunnel.public_url) {
+        cachedNgrokUrl = publicTunnel.public_url;
+        return cachedNgrokUrl;
+      }
+    }
+  } catch (e) {
+    // Ngrok API not running, ignore
+  }
+
+  return cachedNgrokUrl || "http://localhost:5000";
+}
+
 app.post("/api/send-email", authenticate, async (req, res) => {
   const { gmailUser, gmailPass, to, subject, body, leadId, draftId } = req.body;
   
@@ -3292,9 +3321,7 @@ app.post("/api/send-email", authenticate, async (req, res) => {
       }
     }
 
-    const host = req.headers.host || "localhost:5000";
-    const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
-    const baseUrl = process.env.APP_URL || `${protocol}://${host}`;
+    const baseUrl = await getDynamicBaseUrl(req);
     const trackingTag = leadId ? `<br/><br/><img src="${baseUrl}/api/track-open/${leadId}" width="1" height="1" style="display:none;"/>` : "";
     const htmlBody = body.replace(/\n/g, "<br/>") + trackingTag;
 
@@ -3343,9 +3370,11 @@ app.post("/api/ai/generate", authenticate, async (req, res) => {
     return res.status(400).json({ error: "Prompt parameter is required" });
   }
   try {
+    const isJson = prompt.toLowerCase().includes("json");
     const response = await fetchGeminiWithRetry(null, {
       body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }]
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: isJson ? { responseMimeType: "application/json" } : {}
       })
     });
     const data = await response.json();
@@ -4326,7 +4355,7 @@ async function crawlWebsiteForEmail(websiteUrl, logCallback = () => {}) {
   }
 }
 
-function getLeadQualification(lead, pitchOffer, hasBooking = false, requiredContact = 'email_or_phone') {
+function getLeadQualification(lead, pitchOffer, hasBooking = false, requiredContact = 'email_or_phone', strictFilter = true) {
   const email = lead.email;
   const phone = lead.phone;
   const instagram = lead.instagram;
@@ -4369,16 +4398,19 @@ function getLeadQualification(lead, pitchOffer, hasBooking = false, requiredCont
     // no constraints
   }
 
-  const status = lead.website_status || 'unknown';
-  if (pitchOffer === "website_dev") {
-    return { isMatch: true };
-  }
-  if (pitchOffer === "whatsapp_bot") {
-    if (status === "active" && hasBooking) {
-      return { isMatch: false, reason: `already has online booking tools on active website` };
+  if (strictFilter) {
+    const status = lead.website_status || 'unknown';
+    if (pitchOffer === "website_dev") {
+      return { isMatch: true };
     }
-    return { isMatch: true };
+    if (pitchOffer === "whatsapp_bot") {
+      if (status === "active" && hasBooking) {
+        return { isMatch: false, reason: `already has online booking tools on active website` };
+      }
+      return { isMatch: true };
+    }
   }
+
   return { isMatch: true };
 }
 
@@ -4917,12 +4949,18 @@ Format example:
               website = `http://${website}`;
             }
             addLog("info", `[SEARCHER AGENT] Verifying website status and crawling: ${website}...`);
-            const crawlRes = await crawlWebsiteForEmail(website, (type, t) => {
-              if (type === "warn") addLog("warn", `[SEARCHER AGENT] ${t}`);
-              else if (type === "info") addLog("info", `[SEARCHER AGENT] ${t}`);
-            });
-            websiteStatus = crawlRes.websiteStatus || 'active';
-            hasBooking = crawlRes.hasBooking || false;
+            let crawlRes = { websiteStatus: 'active', hasBooking: false, emails: [], phones: [], socials: {} };
+            try {
+              crawlRes = await crawlWebsiteForEmail(website, (type, t) => {
+                if (type === "warn") addLog("warn", `[SEARCHER AGENT] ${t}`);
+                else if (type === "info") addLog("info", `[SEARCHER AGENT] ${t}`);
+              });
+              websiteStatus = crawlRes.websiteStatus || 'active';
+              hasBooking = crawlRes.hasBooking || false;
+            } catch (crawlErr) {
+              addLog("warn", `[SEARCHER AGENT] Website crawl failed for ${website}: ${crawlErr.message}`);
+              websiteStatus = 'active'; // fallback
+            }
             if (!email && crawlRes.emails && crawlRes.emails.length > 0) {
               email = crawlRes.emails[0];
             }
@@ -4958,7 +4996,7 @@ Format example:
       // Perform strict post-Gemini Javascript filter validation
       const qualifiedBatch = [];
       for (const lead of batchLeadsToQualify) {
-        const qualResult = getLeadQualification(lead, pitchOffer, lead.hasBooking, reqContactConstraint);
+        const qualResult = getLeadQualification(lead, pitchOffer, lead.hasBooking, reqContactConstraint, strictFilter !== false);
         if (!qualResult.isMatch) {
           addLog("warn", `[CONTENT AGENT] Skipping "${lead.name}" - does not satisfy contact details requirements (${qualResult.reason}).`);
           continue;
@@ -5360,12 +5398,18 @@ Format example:
               website = `http://${website}`;
             }
             addLog("info", `[SEARCHER AGENT] Verifying website status and crawling: ${website}...`);
-            const crawlRes = await crawlWebsiteForEmail(website, (type, t) => {
-              if (type === "warn") addLog("warn", `[SEARCHER AGENT] ${t}`);
-              else if (type === "info") addLog("info", `[SEARCHER AGENT] ${t}`);
-            });
-            websiteStatus = crawlRes.websiteStatus || 'active';
-            hasBooking = crawlRes.hasBooking || false;
+            let crawlRes = { websiteStatus: 'active', hasBooking: false, emails: [], phones: [], socials: {} };
+            try {
+              crawlRes = await crawlWebsiteForEmail(website, (type, t) => {
+                if (type === "warn") addLog("warn", `[SEARCHER AGENT] ${t}`);
+                else if (type === "info") addLog("info", `[SEARCHER AGENT] ${t}`);
+              });
+              websiteStatus = crawlRes.websiteStatus || 'active';
+              hasBooking = crawlRes.hasBooking || false;
+            } catch (crawlErr) {
+              addLog("warn", `[SEARCHER AGENT] Website crawl failed for ${website}: ${crawlErr.message}`);
+              websiteStatus = 'active'; // fallback
+            }
             if (!email && crawlRes.emails && crawlRes.emails.length > 0) {
               email = crawlRes.emails[0];
             }
@@ -5401,7 +5445,7 @@ Format example:
       // Perform strict post-Gemini Javascript filter validation
       const qualifiedBatch = [];
       for (const lead of batchLeadsToQualify) {
-        const qualResult = getLeadQualification(lead, pitchOffer, lead.hasBooking, reqContactConstraint);
+        const qualResult = getLeadQualification(lead, pitchOffer, lead.hasBooking, reqContactConstraint, strictFilter !== false);
         if (!qualResult.isMatch) {
           addLog("warn", `[CONTENT AGENT] Skipping "${lead.name}" - does not satisfy contact details requirements (${qualResult.reason}).`);
           continue;
@@ -5873,9 +5917,15 @@ CRITICAL: If no matching businesses can be found in the location that satisfy th
         if (!/^https?:\/\//i.test(website)) {
           website = `http://${website}`;
         }
-        const crawlRes = await crawlWebsiteForEmail(website, () => {});
-        websiteStatus = crawlRes.websiteStatus || 'active';
-        hasBooking = crawlRes.hasBooking || false;
+        let crawlRes = { websiteStatus: 'active', hasBooking: false, emails: [], phones: [], socials: {} };
+        try {
+          crawlRes = await crawlWebsiteForEmail(website, () => {});
+          websiteStatus = crawlRes.websiteStatus || 'active';
+          hasBooking = crawlRes.hasBooking || false;
+        } catch (crawlErr) {
+          console.warn(`[SEARCHER AGENT] Website crawl failed for ${website}: ${crawlErr.message}`);
+          websiteStatus = 'active'; // fallback
+        }
         if (!email && crawlRes.emails && crawlRes.emails.length > 0) {
           email = crawlRes.emails[0];
         }
@@ -6000,8 +6050,28 @@ async function generateDeveloperOutreach(lead, config) {
     offerDescription = customOfferDetails;
   }
 
+  // Pick fallback template index based on a simple hash of the lead's name to ensure diversity
+  const templateIndex = Math.abs(lead.name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)) % 5;
+
   let subject = `quick question for ${lead.name}`;
   let body = `Hi,\n\nI was looking at ${lead.name} in ${lead.city} and wanted to reach out. I'm ${senderIntro}.\n\nI ${offerDescription}. I noticed you guys have an awesome ${lead.rating}⭐ rating with ${lead.reviews} reviews, and thought this would work great for your business.\n\nI built a quick preview for ${lead.name} - would you be open to a quick 10-minute check this week?\n\nCheers,\n${signature}`;
+
+  if (templateIndex === 0) {
+    subject = `Quick idea about ${lead.name}`;
+    body = `Hi,\n\nI came across ${lead.name} and noticed a few opportunities where your website or reservation experience could be improved.\n\nMany local businesses lose customers because of slow response times, manual processes, or outdated layouts. I help owners fix exactly those problems by building scalable web applications and automated reservation systems.\n\nWould you be open to a quick conversation to see if there are any easy wins for ${lead.name}?\n\nBest,\n${signature}`;
+  } else if (templateIndex === 1) {
+    subject = `One thing I noticed on ${lead.name}`;
+    body = `Hi,\n\nI spent a few minutes looking through ${lead.name} and one thing immediately stood out. With your great ${lead.rating}⭐ rating on Google, a lot of new customers must be finding you online every day.\n\nI build custom web applications, SaaS platforms, and AI booking tools that help popular businesses convert that search traffic into bookings and sales automatically.\n\nHappy to share a few ideas if you're interested.\n\nThanks,\n${signature}`;
+  } else if (templateIndex === 2) {
+    subject = `Curious question`;
+    body = `Hi,\n\nQuick question — are you currently planning to build any new digital features/bookings this quarter, or are you mostly focused on your current setup?\n\nI ask because I help startups and local businesses like ${lead.name} implement custom reservation systems, websites, and chat automations without the cost of a full-time engineering team.\n\nWould love to learn what you're working on.\n\nRegards,\n${signature}`;
+  } else if (templateIndex === 3) {
+    subject = `Saving time at ${lead.name}`;
+    body = `Hi,\n\nOne of the biggest challenges I see with popular businesses like ${lead.name} is getting reservation inquiries and website updates handled quickly without slowing down your day-to-day operations.\n\nI help founders and owners save hours by building scalable web platforms and automated messaging setups.\n\nIf you ever need an experienced development partner, I'd be happy to chat.\n\nBest,\n${signature}`;
+  } else if (templateIndex === 4) {
+    subject = `If web/booking updates are on your roadmap...`;
+    body = `Hi,\n\nIf expanding your digital presence or adding new features/booking systems is on your roadmap this year, I'd love to introduce myself.\n\nI help businesses like ${lead.name} build custom websites, dashboards, and automated reservation bots from idea to launch.\n\nIf that's something you anticipate needing, I'd be happy to discuss how I could help.\n\nBest regards,\n${signature}`;
+  }
 
   const geminiKey = config.gemini_key || process.env.GEMINI_API_KEY;
   if (geminiKey) {
@@ -6011,8 +6081,8 @@ async function generateDeveloperOutreach(lead, config) {
       if (userId) {
         try {
           const bestTemplateRes = await pool.query(
-            "SELECT subject_template, body_template FROM pitch_templates WHERE user_id = $1 AND is_active = TRUE AND sent_count > 0 ORDER BY (reply_count::float / NULLIF(sent_count::float, 0)) DESC LIMIT 1",
-            [userId]
+             "SELECT subject_template, body_template FROM pitch_templates WHERE user_id = $1 AND is_active = TRUE AND sent_count > 0 ORDER BY (reply_count::float / NULLIF(sent_count::float, 0)) DESC LIMIT 1",
+             [userId]
           );
           if (bestTemplateRes.rowCount > 0) {
             const bt = bestTemplateRes.rows[0];
@@ -6027,37 +6097,40 @@ async function generateDeveloperOutreach(lead, config) {
       let styleGuidelines = "";
       
       const stylesToolkit = `
-        OUTREACH STYLES TOOLBOX (You can dynamically adapt or choose elements from these styles to write the best email, but prioritize the selected style "${style}"):
-        1. ROI-Focused ("roi"): Emphasize saving 2-3 hours of staff time daily, capturing lost leads, and conversion.
-        2. Opinions/Feedback ("feedback"): Start with Google Rating/Reviews, suggest friendly, constructive optimization.
-        3. Pre-built Demo Showcase ("direct"): Directly pitch that you have a custom prototype built for them.
-        4. Collaboration/Partnership ("collaboration"): A template that starts by pitching collaboration:
-           "Hi [First Name / Owner Name],
-           I was checking out [Business Name] and what you're doing in [Niche/Industry] – a few ideas around a potential collaboration came to mind.
-           We've been helping teams in [Industry] tackle [specific problem], and recently partnered with [previous clients/partners/work samples] – together we managed to [achieve result/metric].
-           I feel there might be a cool angle for us to collaborate.
-           If you're open to it, I'd be happy to jump on a short Google Meet and talk it through. I'm free on Tuesday or Wednesday, let me know!
-           Best,
-           [Signature]"
-        5. Casual & Warm ("casual"): Very friendly, conversational, low-friction helper pitch.
+        HIGH-CONVERTING OUTREACH HOOK TEMPLATES & STYLES (You MUST select one of these 5 hook angles dynamically per email to ensure maximum variety and personalization. Do NOT use the same subject prefix or template structure for every lead):
+        
+        1. Problem-Based Hook (Subject: Quick idea about [Business Name] or [Business Name] website idea):
+           - Intro Angle: Mention seeing a few digital opportunities where their website, reservation experience, or online presence could be improved without rebuilding everything.
+        
+        2. Observation Hook (Subject: One thing I noticed on [Business Name] or Custom web experience for [Business Name]):
+           - Intro Angle: Make a highly personalized observation about their business or online presence.
+        
+        3. Curiosity Hook (Subject: Curious question or Question for [Business Name]):
+           - Intro Angle: Ask a low-friction question: "are you currently planning to build anything new this quarter, or are you mostly focused on improving your existing platform?"
+        
+        4. ROI Hook (Subject: Saving hours at [Business Name] or Saving engineering time):
+           - Intro Angle: Focus on the challenge of getting things built quickly and automating bookings without slowing down their core team/operations.
+        
+        5. Soft Value Hook (Subject: If development/updates are on [Business Name]'s roadmap...):
+           - Intro Angle: If expanding their product, website, or booking features is on their roadmap, offer senior dev/automation help to get it done.
       `;
 
       if (style === "roi") {
         styleGuidelines = `
-        - Pitch Angle: ROI-focused. Emphasize saving 2-3 hours of staff time daily, never missing booking messages, and improving conversion rates of chat visitors into paying customers. Mention financial benefits and call automation.`;
+        - Pitch Angle Focus: Prioritize the ROI-focused hook. Emphasize saving 2-3 hours of staff time daily, never missing booking messages, and improving conversion rates of chat visitors into paying customers. Mention financial benefits and call automation.`;
       } else if (style === "feedback") {
         styleGuidelines = `
-        - Pitch Angle: Opinions/Feedback. Start by referencing their Google rating of ${lead.rating}⭐ and reviews count (${lead.reviews} reviews). Note that they must get flooded with reservation requests, and share a constructive tip on how automated IG/Google Maps chat replies could streamline their reservation flow.`;
+        - Pitch Angle Focus: Prioritize the Observation/Feedback hook. Start by referencing their Google rating of ${lead.rating}⭐ and reviews count (${lead.reviews} reviews). Note that they must get flooded with reservation requests, and share a constructive tip on how automated IG/Google Maps chat replies could streamline their reservation flow.`;
       } else if (style === "direct") {
         styleGuidelines = `
-        - Pitch Angle: Pre-built Demo Showcase. Pitch directly that you've put together a quick, pre-built custom AI chat booking assistant prototype specifically customized for ${lead.name} to demonstrate how it handles instant reservations.`;
+        - Pitch Angle Focus: Prioritize the Pre-built Demo Showcase hook. Pitch directly that you've put together a quick, pre-built custom AI chat booking assistant prototype specifically customized for ${lead.name} to demonstrate how it handles instant reservations.`;
       } else if (style === "collaboration") {
         styleGuidelines = `
-        - Pitch Angle: Collaboration & Partnership. Use a structure modeled after the "collaboration" style in the toolbox. Make it feel authentic, mentioning the specific industry and problem you solve, and proposing a collaboration check.`;
+        - Pitch Angle Focus: Prioritize the Collaboration & Partnership hook. Use a structure modeled after the "collaboration" style in the toolbox. Make it feel authentic, mentioning the specific industry and problem you solve, and proposing a collaboration check.`;
       } else {
         const pitchIdentity = (useCompany && companyName) ? `${senderRole} from ${companyName}` : senderRole;
         styleGuidelines = `
-        - Pitch Angle: Casual, warm, and helpful ${pitchIdentity} offering to help another local business owner automate booking DMs and reservation queries. Keep it very conversational and low-friction.`;
+        - Pitch Angle Focus: Choose dynamically from the 5 templates in the styles toolkit. Keep it casual, warm, and helpful, offering to help another local business owner automate booking DMs, improve websites, or build custom reservation queries. Keep it very conversational and low-friction.`;
       }
 
       let offerGuidelines = "";
@@ -6068,21 +6141,21 @@ async function generateDeveloperOutreach(lead, config) {
       } else if (pitchOffer === "ai_chatbot") {
         offerGuidelines = `offering custom AI chatbot assistants that reply to customer inquiries instantly on their website, Google Maps, and Instagram DMs 24/7.`;
       } else if (pitchOffer === "custom" && customOfferDetails) {
-        offerGuidelines = `offering: ${customOfferDetails}. Focus your pitch around this specific custom offer.`;
+        offerGuidelines = `a custom-tailored service. Service details: "${customOfferDetails}". Use this description to understand our custom service.`;
       }
 
       const promptText = `
-        You are ${senderName}, working as "${senderRole}"${(useCompany && companyName) ? ` at ${companyName}` : ""}. Write a highly personalized cold outreach email to a business owner.
-        
+        You are ${senderName}, working as "${senderRole}"${(useCompany && companyName) ? ` at ${companyName}` : ""}.
+        Redesign cold outreach from scratch for this specific business. Do NOT use templates or fixed structures.
+
         Sender Profile Context:
         - Account Type: ${senderType}
-        - Sender Bio / Brand Description: ${aboutText}
+        - Sender Bio: ${aboutText}
         - Sender Portfolio Website: ${portfolioUrl || "None"}
-        - Sender Social Media: LinkedIn: ${socialLinkedin || "None"}, GitHub: ${socialGithub || "None"}, Twitter: ${socialTwitter || "None"}
-        - Branding Images: Logo URL: ${logoUrl || "None"}, Banner URL: ${bannerUrl || "None"}, Profile Icon URL: ${profileIconUrl || "None"}
-        - Past Work Samples & Case Studies Details: ${workSamples || "None"}
+        - Sender Social Media: LinkedIn: ${socialLinkedin || "None"}, GitHub: ${socialGithub || "None"}
+        - Past Work Samples / Case Studies: ${workSamples || "None"}
         - Sender Location: ${senderLocation || "remote (works online)"}
-        - Remote Context: ${senderLocation && senderLocation.toLowerCase() !== (lead.city || "").toLowerCase() ? `The sender is NOT local to ${lead.city}. Do NOT write as if they visited the business or tasted their food/coffee. Use phrases like "I came across your business online" or "I noticed your listing" — never "stopped by" or "came in".` : "The sender is local or can reference in-person familiarity naturally."}
+        - Remote Context: ${senderLocation && senderLocation.toLowerCase() !== (lead.city || "").toLowerCase() ? `The sender is NOT local to ${lead.city}. Do NOT say you visited their location in-person. Use online-friendly phrases.` : "Sender is local/nearby."}
 
         Business Details:
         - Name: ${lead.name}
@@ -6093,38 +6166,55 @@ async function generateDeveloperOutreach(lead, config) {
         - Instagram: ${lead.instagram || "None"}
         - Website: ${lead.website || "None"}
         - Website Status: ${lead.website_status || "unknown"} (can be "active", "no_website", or "down")
+        - Existing Personalized Icebreaker: ${lead.personalized_icebreaker || "None"}
+
+        User-Selected Campaign Configuration:
+        - Selected Target Niche: ${config.niche || lead.type || "unknown"}
+        - Selected Target Location: ${config.location || lead.city || "unknown"}
+        - Selected Offer ID: ${pitchOffer}
+        - Custom Offer Details: ${customOfferDetails || "None"}
 
         Outreach Guidelines:
         - Target Audience: Local business owner
-        - Tone: Casual, helpful, friendly.
+        - Tone: Professional, human, friendly, helpful, conversational. Never salesy, robotic, or desperate.
         - Core Pitch Offer: ${offerGuidelines}
-        - Personalization Rules:
-          - Incorporate sender's bio context ("${aboutText}") to state why you are reaching out and highlight relevant skills/background.
-          - If a portfolio URL (${portfolioUrl}) or social links (like GitHub ${socialGithub} or LinkedIn ${socialLinkedin}) are provided, naturally mention them to build high credibility.
-          - If Past Work Samples are provided ("${workSamples}"), naturally incorporate references to these relevant projects, websites you built, or custom solutions you deployed to demonstrate your experience and skills.
-          - If the Core Pitch Offer is website design/development (website_dev):
-            - If Website Status is "no_website", write that you noticed they don't have a website, and pitch why having a modern website will capture local search traffic and build customer trust.
-            - If Website Status is "down", write that you tried to visit their site and noticed it was down, broken, or inaccessible, and offer to help get it back online or rebuild a modern, reliable one.
-            - If Website Status is "active", write that you checked their website, and suggest specific subtle improvements (e.g. mobile optimizations, fast page loading, cleaner layout).
-          - If Core Pitch Offer is WhatsApp Booking Bot or AI Chatbot, highlight how their customers can book appointments or get instant support via chat DMs 24/7.
-          - If Core Pitch Offer is a custom service, analyze the custom service details and identify the key pain point it solves for a business of this category (${lead.type}). Address how this business specifically (${lead.name}) can benefit from it, referencing their Google metrics or website presence to personalize the pitch.
-        ${stylesToolkit}
-        ${styleGuidelines}
-        ${bestTemplateText}
-        - Signature: Use exactly this:
-          Cheers,
-          ${senderName}
-          ${senderRole}${(useCompany && companyName) ? `\n${companyName}` : ""}
-        - Subject Line: MUST be highly click-worthy, lowercase, brief, and feel like local feedback or a quick local query (e.g. "quick question about ${lead.name}" or "website feedback").
-        - HIGH-CONVERTING PITCH RULES:
-          * First sentence hook: Reference their actual business directly. Never say "My name is" or "Hope you are doing well". Start with something like "Hey, I came across ${lead.name} on Google Maps..." or "Hey, I was looking at your rating (${lead.rating}⭐)..."
-          * No sales hype or buzzwords. Keep it grounded, direct, and conversational.
-          * Low-Friction Call-To-Action (CTA): Do NOT ask for a call or meeting. Instead, ask for simple permission to show them something: "Mind if I send over a quick 30-second screenshot/preview showing how we fix this?" or "Would you be open to seeing a quick concept I put together for you?"
-        - CRITICAL FORMATTING RULES:
-          * Do NOT add blank lines between every sentence — only add a single blank line between distinct paragraphs (intro, pitch, CTA, sign-off).
-          * Keep each paragraph to 2-3 sentences max. Total email body must be under 120 words.
-          * No greetings like "I hope this email finds you well". Get straight to the point.
-        - Output format: Start with "Subject: [subject text]" on the first line, then a blank line, and then the email body. Output ONLY the email.
+
+        BANNED PHRASES: Do NOT use phrases like "Hope you're doing well", "I came across your website", "Just checking in", "Wanted to reach out", "We are the best", "Industry-leading", "Revolutionary", "Game changer", "Guaranteed", "World class".
+
+        Pitch Strategy Engine:
+        - First build a strategy from the user's selected niche, selected location, selected preset/custom offer, sender profile, work samples, and this lead's real data.
+        - Translate the offer into the lead's industry language. For example: restaurants care about reservations and table inquiries; salons/clinics care about appointment requests; home services care about quote capture and missed calls; gyms/studios care about trials, memberships, and class questions; B2B firms care about lead qualification and response speed.
+        - If this is a custom offer, do not copy the custom offer text. Extract its promised result, target buyer, pain point, and proof angle, then rewrite it naturally for this exact business.
+        - Use work samples only when relevant to the lead's industry or pain. If they do not match, mention capability generally and do not invent proof.
+        - Use the existing personalized icebreaker if it is concrete and useful. If it is generic, replace it with a stronger observation from rating, reviews, website status, social link, city, niche, or missing booking/contact flow.
+        - If the sender is remote or in a different city/country, never imply local visits or in-person familiarity. Use online research language.
+        - The final email must make clear: why this business, why this offer, why now, and what simple next step makes sense.
+
+        AI THINKING STEP-BY-STEP PROCESS:
+        1. Identify what the company actually does, their target customers, and brand positioning.
+        2. Infer the best industry-specific pitch angle from selected offer/custom offer + selected niche/location + this lead's actual data.
+        3. Find a genuine personalized icebreaker based on their existing icebreaker, rating, location, niche, website status, or social profile (never generic compliments like "I love your website").
+        4. Identify specific opportunities/weaknesses (website down/missing, outdated mobile styling, slow loading, missing booking tools, manual FAQ processing) in a constructive, friendly way.
+        5. Match relevant services that fit their business needs (don't force unrelated products).
+        6. Explain the business outcome / value proposition in industry terms.
+        7. Offer a low-friction call-to-action (CTA) e.g., asking for simple permission to show them a concept sketch, quick preview mockup, or 2-minute audit.
+
+        Return a single JSON object with these EXACT keys:
+        - "thinking": A brief paragraph detailing your step-by-step research answers (What they do, their customers, opportunities, matched service reason).
+        - "subject": Short click-worthy personalized subject line (no generic or spam words).
+        - "opening": Personalized opening sentence hook referring to their business directly.
+        - "personalizedBody": Opportunity-focused paragraph explaining what can be improved.
+        - "valueProposition": The business benefit/outcome of the matched service for them.
+        - "cta": Low-pressure CTA (asking simple permission to show/send a quick concept preview).
+        - "closing": Cheers, ${senderName}${(useCompany && companyName) ? `\n${senderRole}\n${companyName}` : `\n${senderRole}`}
+        - "followUp1": "Subject: [follow up subject]\\n\\n[A short, friendly follow-up email text sent 3 days later, referencing the previous idea and offering simple value or permission to share a mockup]"
+        - "followUp2": "Subject: [follow up subject]\\n\\n[A short, conversational second follow-up text sent 7 days later, simple and low pressure]"
+        - "linkedinConnection": "A short, friendly LinkedIn connection request message (max 300 characters, no sales pitch, just warm networking context)"
+        - "linkedinFollowUp": "A short, conversational follow-up message to send once they accept the LinkedIn connection"
+        - "shortVersion": "Subject: [short subject]\\n\\n[An ultra-concise email version under 60 words body]"
+        - "longVersion": "Subject: [long subject]\\n\\n[A deconstructive, high-impact version under 150 words body]"
+
+        Do NOT wrap the JSON inside markdown code blocks (e.g., do not start with \`\`\`json). Return a raw JSON string.
       `;
       
       const response = await fetchGeminiWithRetry(
@@ -6134,7 +6224,9 @@ async function generateDeveloperOutreach(lead, config) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             contents: [{ parts: [{ text: promptText }] }],
-            generationConfig: {}
+            generationConfig: {
+              responseMimeType: "application/json"
+            }
           }),
           signal: AbortSignal.timeout(30000)
         },
@@ -6145,18 +6237,26 @@ async function generateDeveloperOutreach(lead, config) {
       if (response) {
         const data = await response.json();
         const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-        if (text.startsWith("Subject:")) {
-          const lines = text.split("\n");
-          const subjectLine = lines[0].replace("Subject:", "").trim();
-          // Body is everything after the first blank line — join with single newlines, strip excess blanks
-          const bodyLines = lines.slice(2); // skip Subject line and blank line after it
-          const bodyRaw = bodyLines.join("\n");
-          // Collapse 3+ consecutive newlines into 2 (one paragraph break)
-          const bdy = bodyRaw.replace(/\n{3,}/g, "\n\n").trim();
-          return { subject: subjectLine, body: bdy };
-        } else if (text) {
-          const cleaned = text.replace(/\n{3,}/g, "\n\n").trim();
-          return { subject: `quick query about ${lead.name}`, body: cleaned };
+        if (text) {
+          try {
+            const parsed = JSON.parse(text);
+            const fullBody = `${parsed.opening}\n\n${parsed.personalizedBody}\n\n${parsed.valueProposition}\n\n${parsed.cta}\n\n${parsed.closing}`;
+            // Return parsed fields as well as subject/body
+            return {
+              subject: parsed.subject || `quick question for ${lead.name}`,
+              body: fullBody,
+              thinking: parsed.thinking || "",
+              followUp1: parsed.followUp1 || "",
+              followUp2: parsed.followUp2 || "",
+              linkedinConnection: parsed.linkedinConnection || "",
+              linkedinFollowUp: parsed.linkedinFollowUp || "",
+              shortVersion: parsed.shortVersion || "",
+              longVersion: parsed.longVersion || "",
+              parsed: parsed
+            };
+          } catch (jsonErr) {
+            console.error("[CAMPAIGN GEMINI JSON PARSE ERR] Falling back to text split", jsonErr, text);
+          }
         }
       }
     } catch (e) {
@@ -6441,7 +6541,7 @@ async function triggerCronCampaign(config) {
               }
             });
 
-            const baseUrl = process.env.APP_URL || "http://localhost:5000";
+            const baseUrl = await getDynamicBaseUrl();
             const htmlBody = body.replace(/\n/g, "<br/>") + 
               `<br/><br/><img src="${baseUrl}/api/track-open/${lead.id}" width="1" height="1" style="display:none;"/>`;
 
@@ -6713,7 +6813,7 @@ async function triggerCronCampaign(config) {
           }
         });
 
-        const baseUrl = process.env.APP_URL || "http://localhost:5000";
+        const baseUrl = await getDynamicBaseUrl();
         const htmlBody = body.replace(/\n/g, "<br/>") + 
           `<br/><br/><img src="${baseUrl}/api/track-open/${lead.id}" width="1" height="1" style="display:none;"/>`;
 
