@@ -128,9 +128,9 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
   // Supabase pooler-safe settings — prevents ECONNRESET crashes
-  max: 5,                    // Stay well within Supabase free-tier connection limit
+  max: 20,                   // Stay well within Supabase connection limits while preventing pool starvation
   idleTimeoutMillis: 30000,  // Release idle clients after 30s (before Supabase drops them)
-  connectionTimeoutMillis: 10000, // Fail fast if pooler is unreachable
+  connectionTimeoutMillis: 15000, // Wait up to 15s to prevent timeouts under load
   keepAlive: true,           // Detect dead sockets early
   keepAliveInitialDelayMillis: 10000,
 });
