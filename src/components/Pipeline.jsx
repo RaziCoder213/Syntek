@@ -721,6 +721,11 @@ export default function Pipeline({ leads, setLeads, settings, showToast }) {
                           </span>
                         )}
                         {l.rating && <span style={{ fontSize: 10, color: "var(--text-4)" }}>{l.rating}⭐</span>}
+                        {l.qualification_score !== null && l.qualification_score !== undefined && (
+                          <span style={{ fontSize: 10, fontWeight: 700, color: "var(--brand)", background: "rgba(108, 92, 231, 0.08)", padding: "1px 4px", borderRadius: "3px" }}>
+                            🎯 {l.qualification_score}%
+                          </span>
+                        )}
                       </div>
                     </div>
                   ))
@@ -784,6 +789,7 @@ export default function Pipeline({ leads, setLeads, settings, showToast }) {
                   { label: "Email",   val: drawerLead.email   || "—" },
                   { label: "Phone",   val: drawerLead.phone   || "—" },
                   { label: "Rating",  val: drawerLead.rating  ? `${drawerLead.rating}⭐ (${drawerLead.reviews} reviews)` : "—" },
+                  { label: "AI Score", val: drawerLead.qualification_score !== null && drawerLead.qualification_score !== undefined ? `🎯 ${drawerLead.qualification_score}%` : "—" },
                   { label: "Website", val: drawerLead.website || "No website" },
                   { label: "Status",  val: drawerLead.status  || "new" },
                 ].map(({ label, val }) => (

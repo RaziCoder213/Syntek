@@ -44,6 +44,11 @@ export default function Campaigns({
   const [campVersions, setCampVersions] = useState(null);
   const [campThinking, setCampThinking] = useState("");
 
+  // Sent Email Tracker
+  const [sentLeads, setSentLeads] = useState([]);
+  const [sentTrackerLoading, setSentTrackerLoading] = useState(false);
+  const [trackerFilter, setTrackerFilter] = useState("all"); // all | opened | unopened
+
   const activeLeadId = selectedLeadId || (leads[0] ? leads[0].id.toString() : "");
 
   // Sequence Builder States
@@ -87,9 +92,29 @@ export default function Campaigns({
     }
   };
 
+  const fetchSentLeads = async () => {
+    setSentTrackerLoading(true);
+    try {
+      const res = await fetch("/api/leads/sent-tracker", {
+        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSentLeads(data);
+      }
+    } catch (err) {
+      console.error("Failed to fetch sent leads tracker:", err);
+    } finally {
+      setSentTrackerLoading(false);
+    }
+  };
+
   useEffect(() => {
     fetchSequences();
     fetchCampaignSettings();
+    fetchSentLeads();
+    const interval = setInterval(fetchSentLeads, 30000);
+    return () => clearInterval(interval);
   }, []);
 
   const handleUpdateCampaignSequence = async (seqId) => {
@@ -573,7 +598,8 @@ Do NOT wrap the JSON inside markdown code blocks. Return a raw JSON string.`;
         {[
           { id: "composer", label: "✉️ Single Outreach Composer", desc: "Manual Client Loop" },
           { id: "sequences", label: "⛓️ Drip Sequences Builder", desc: "Multi-Step Sequences" },
-          { id: "autopilot", label: "🤖 Autopilot Core & Stats", desc: "Autonomous background dispatcher" }
+          { id: "autopilot", label: "🤖 Autopilot Core & Stats", desc: "Autonomous background dispatcher" },
+          { id: "tracker", label: "📬 Sent Email Tracker", desc: "Open / Unopened status" }
         ].map(tb => (
           <button
             key={tb.id}
@@ -1171,6 +1197,176 @@ Do NOT wrap the JSON inside markdown code blocks. Return a raw JSON string.`;
 
         </div>
       )}
+
+      {/* Sent Email Tracker Tab */}
+      {campaignTab === "tracker" && (() => {
+        const filtered = sentLeads.filter(l =>
+          trackerFilter === "all" ? true :
+          trackerFilter === "opened" ? l.is_opened :
+          !l.is_opened
+        );
+        const total = sentLeads.length;
+        const opened = sentLeads.filter(l => l.is_opened).length;
+        const unopened = total - opened;
+        const openRate = total > 0 ? Math.round((opened / total) * 100) : 0;
+
+        return (
+          <div style={{ display: "flex", flexDirection: "column", gap: "20px", animation: "fadeIn 0.25s ease-out" }}>
+
+            {/* Stats Header */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "16px" }}>
+              {[
+                { label: "Total Sent", value: total, icon: "📧", color: "var(--color-indigo)" },
+                { label: "Opened", value: opened, icon: "👁️", color: "var(--color-lime)" },
+                { label: "Unopened", value: unopened, icon: "📩", color: "var(--color-amber)" },
+                { label: "Open Rate", value: `${openRate}%`, icon: "📈", color: openRate >= 30 ? "var(--color-emerald)" : openRate >= 10 ? "var(--color-amber)" : "var(--color-rose)" },
+              ].map((stat, i) => (
+                <div key={i} className="glass-panel" style={{ padding: "16px 20px", display: "flex", alignItems: "center", gap: "14px" }}>
+                  <span style={{ fontSize: "28px" }}>{stat.icon}</span>
+                  <div>
+                    <div style={{ fontSize: "22px", fontWeight: 900, color: stat.color }}>{stat.value}</div>
+                    <div style={{ fontSize: "11px", color: "var(--text-secondary)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>{stat.label}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Open Rate Progress Bar */}
+            <div className="glass-panel" style={{ padding: "16px 20px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+                <span style={{ fontSize: "13px", fontWeight: 700, color: "var(--text-primary)" }}>📊 Open Rate</span>
+                <span style={{ fontSize: "13px", fontWeight: 800, color: openRate >= 30 ? "var(--color-emerald)" : openRate >= 10 ? "var(--color-amber)" : "var(--color-rose)" }}>{openRate}%</span>
+              </div>
+              <div style={{ height: "8px", background: "var(--bg-translucent-mild)", borderRadius: "999px", overflow: "hidden" }}>
+                <div style={{ height: "100%", width: `${openRate}%`, background: openRate >= 30 ? "linear-gradient(90deg, var(--color-lime), var(--color-emerald))" : openRate >= 10 ? "linear-gradient(90deg, var(--color-amber), #f97316)" : "linear-gradient(90deg, #ef4444, #dc2626)", borderRadius: "999px", transition: "width 0.8s ease" }} />
+              </div>
+              <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "6px" }}>
+                {openRate >= 30 ? "🔥 Excellent open rate! Your subject lines are working great." : openRate >= 10 ? "✅ Average open rate. Try A/B testing your subject lines." : total === 0 ? "No emails sent yet. Run a campaign to start tracking." : "⚠️ Low open rate. Consider personalizing subject lines more."}
+              </div>
+            </div>
+
+            {/* Filter + Refresh Row */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+              <div style={{ display: "flex", gap: "8px" }}>
+                {["all", "opened", "unopened"].map(f => (
+                  <button
+                    key={f}
+                    type="button"
+                    onClick={() => setTrackerFilter(f)}
+                    className="btn btn-sm"
+                    style={{
+                      fontSize: "12px",
+                      fontWeight: 700,
+                      padding: "6px 14px",
+                      borderRadius: "999px",
+                      background: trackerFilter === f
+                        ? (f === "opened" ? "var(--color-lime-glow)" : f === "unopened" ? "rgba(245,158,11,0.15)" : "rgba(99,102,241,0.15)")
+                        : "var(--bg-translucent-mild)",
+                      color: trackerFilter === f
+                        ? (f === "opened" ? "var(--color-lime)" : f === "unopened" ? "var(--color-amber)" : "var(--color-indigo)")
+                        : "var(--text-secondary)",
+                      border: trackerFilter === f
+                        ? (f === "opened" ? "1px solid var(--color-lime-border)" : f === "unopened" ? "1px solid rgba(245,158,11,0.3)" : "1px solid rgba(99,102,241,0.3)")
+                        : "1px solid var(--border-translucent)"
+                    }}
+                  >
+                    {f === "all" ? `All (${total})` : f === "opened" ? `👁️ Opened (${opened})` : `📩 Unopened (${unopened})`}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                className="btn btn-sm btn-outline"
+                onClick={fetchSentLeads}
+                disabled={sentTrackerLoading}
+                style={{ fontSize: "12px", padding: "6px 14px" }}
+              >
+                {sentTrackerLoading ? "Refreshing..." : "🔄 Refresh"}
+              </button>
+            </div>
+
+            {/* Leads Table */}
+            <div className="glass-panel" style={{ padding: 0, overflow: "hidden" }}>
+              {filtered.length === 0 ? (
+                <div style={{ padding: "40px", textAlign: "center", color: "var(--text-muted)", fontSize: "14px" }}>
+                  {total === 0 ? "No emails sent yet. Run the Autopilot or manually send emails to start tracking." : `No ${trackerFilter} emails found.`}
+                </div>
+              ) : (
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid var(--border-translucent)", background: "var(--bg-translucent-mild)" }}>
+                      <th style={{ padding: "12px 16px", textAlign: "left", fontSize: "10px", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Lead</th>
+                      <th style={{ padding: "12px 16px", textAlign: "left", fontSize: "10px", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Email</th>
+                      <th style={{ padding: "12px 16px", textAlign: "left", fontSize: "10px", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Status</th>
+                      <th style={{ padding: "12px 16px", textAlign: "center", fontSize: "10px", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Open Status</th>
+                      <th style={{ padding: "12px 16px", textAlign: "left", fontSize: "10px", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Opened At</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered.map((lead, idx) => (
+                      <tr
+                        key={lead.id}
+                        style={{
+                          borderBottom: "1px solid var(--border-translucent)",
+                          background: idx % 2 === 0 ? "transparent" : "var(--bg-translucent-subtle)",
+                          transition: "background 0.15s"
+                        }}
+                      >
+                        <td style={{ padding: "12px 16px" }}>
+                          <div style={{ fontWeight: 700, color: "var(--text-primary)" }}>{lead.name}</div>
+                          <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>{lead.city} · {lead.type}</div>
+                        </td>
+                        <td style={{ padding: "12px 16px", color: "var(--text-secondary)", fontSize: "12px" }}>
+                          {lead.email || "—"}
+                        </td>
+                        <td style={{ padding: "12px 16px" }}>
+                          <span style={{
+                            padding: "3px 10px",
+                            borderRadius: "999px",
+                            fontSize: "11px",
+                            fontWeight: 700,
+                            background: lead.status === "replied" ? "rgba(16,185,129,0.15)" : lead.status === "opened" ? "rgba(132,204,22,0.15)" : lead.status === "won" ? "rgba(99,102,241,0.15)" : "rgba(245,158,11,0.15)",
+                            color: lead.status === "replied" ? "var(--color-emerald)" : lead.status === "opened" ? "var(--color-lime)" : lead.status === "won" ? "var(--color-indigo)" : "var(--color-amber)",
+                          }}>
+                            {lead.status.replace("_", " ")}
+                          </span>
+                        </td>
+                        <td style={{ padding: "12px 16px", textAlign: "center" }}>
+                          {lead.is_opened ? (
+                            <span style={{
+                              display: "inline-flex", alignItems: "center", gap: "5px",
+                              padding: "4px 12px", borderRadius: "999px", fontSize: "12px", fontWeight: 700,
+                              background: "rgba(132,204,22,0.15)", color: "var(--color-lime)",
+                              border: "1px solid rgba(132,204,22,0.3)"
+                            }}>
+                              👁️ Opened
+                            </span>
+                          ) : (
+                            <span style={{
+                              display: "inline-flex", alignItems: "center", gap: "5px",
+                              padding: "4px 12px", borderRadius: "999px", fontSize: "12px", fontWeight: 700,
+                              background: "rgba(245,158,11,0.1)", color: "var(--color-amber)",
+                              border: "1px solid rgba(245,158,11,0.25)"
+                            }}>
+                              📩 Unopened
+                            </span>
+                          )}
+                        </td>
+                        <td style={{ padding: "12px 16px", fontSize: "12px", color: lead.opened_at ? "var(--color-lime)" : "var(--text-muted)" }}>
+                          {lead.opened_at
+                            ? new Date(lead.opened_at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+                            : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+          </div>
+        );
+      })()}
 
     </div>
   );
