@@ -23,6 +23,42 @@ if (process.env.USERPROFILE) {
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
+// Global DNS lookup override using async c-ares Resolver to prevent thread pool exhaustion and EAI_AGAIN on Windows
+const originalLookup = dns.lookup;
+const customResolver = new dns.promises.Resolver();
+try {
+  customResolver.setServers(["1.1.1.1", "8.8.8.8"]);
+} catch (e) {
+  console.warn("Failed to set custom DNS servers:", e.message);
+}
+
+dns.lookup = function(hostname, options, callback) {
+  if (typeof options === "function") {
+    callback = options;
+    options = {};
+  }
+  const all = options && options.all;
+  if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || /^(?:\d{1,3}\.){3}\d{1,3}$/.test(hostname)) {
+    return originalLookup(hostname, options, callback);
+  }
+  customResolver.resolve4(hostname)
+    .then((addresses) => {
+      if (addresses && addresses.length > 0) {
+        if (all) {
+          const results = addresses.map(addr => ({ address: addr, family: 4 }));
+          callback(null, results);
+        } else {
+          callback(null, addresses[0], 4);
+        }
+      } else {
+        originalLookup(hostname, options, callback);
+      }
+    })
+    .catch(() => {
+      originalLookup(hostname, options, callback);
+    });
+};
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -350,6 +386,9 @@ async function setupDatabase() {
     `);
     await pool.query(`
       ALTER TABLE leads ADD COLUMN IF NOT EXISTS qualification_reason TEXT DEFAULT NULL;
+    `);
+    await pool.query(`
+      ALTER TABLE leads ADD COLUMN IF NOT EXISTS qualification_score INTEGER DEFAULT NULL;
     `);
     await pool.query(`
       ALTER TABLE leads ADD COLUMN IF NOT EXISTS pipeline_stage VARCHAR(100) DEFAULT NULL;
@@ -1425,6 +1464,24 @@ app.get("/api/scan/active", authenticate, async (req, res) => {
   }
 });
 
+// Email Sent Tracker — returns all leads that have been emailed, with open tracking data
+app.get("/api/leads/sent-tracker", authenticate, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, name, email, city, type, status, is_opened, opened_at, created_at, qualification_score
+       FROM leads
+       WHERE user_id = $1
+         AND status NOT IN ('not contacted', 'new', 'no_email', 'trashed')
+         AND email IS NOT NULL AND email != ''
+       ORDER BY COALESCE(opened_at, created_at) DESC`,
+      [req.userId]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get("/api/leads/export", authenticate, async (req, res) => {
   const { ids, status, city } = req.query;
   try {
@@ -2048,6 +2105,19 @@ app.post("/api/ai/copilot", authenticate, async (req, res) => {
     const defaultStages = ["New", "Re-research", "Researched", "Drafted", "Contacted", "Follow Up", "Opened", "Replied", "Won", "Archived"];
     const stages = config.kanban_stages || defaultStages;
 
+    // Fetch last 15 emails/replies/drafts to give the AI context about outreach history
+    const recentEmailsRes = await pool.query(
+      "SELECT id, from_name, from_email, subject, preview, category, labels, time_received FROM emails WHERE user_id = $1 ORDER BY time_received DESC, id DESC LIMIT 15",
+      [req.userId]
+    );
+    let recentEmailsText = "No emails sent or received yet.";
+    if (recentEmailsRes.rowCount > 0) {
+      recentEmailsText = "";
+      for (const e of recentEmailsRes.rows) {
+        recentEmailsText += `- [${e.category.toUpperCase()}] From: ${e.from_name} <${e.from_email}> | Subject: "${e.subject || "(No Subject)"}" | Date: ${e.time_received}\n  Content Preview: "${e.preview || "(Empty)"}"\n`;
+      }
+    }
+
     // 5. Construct Prompt
     const systemPrompt = `
 You are the Syntek Global AI Co-pilot, a powerful command assistant designed to help the user manage the entire platform.
@@ -2094,6 +2164,9 @@ Here is the current platform status:
 
 Recent leads (up to 5):
 ${recentLeadsText}
+
+Recent emails/outreach history (last 15 messages sent/received/drafts):
+${recentEmailsText}
 
 Answer the user's message clearly, inform them of any actions you are queueing, and ALWAYS output the JSON action array block at the very end of your response.
 `;
@@ -4243,7 +4316,14 @@ async function crawlWebsiteForEmail(websiteUrl, logCallback = () => {}) {
       if (isValidEmail(email)) {
         emails.add(email.toLowerCase().trim());
       } else {
-        logCallback("warn", `[-] Ignored placeholder email: ${email}`);
+        const lowerEmail = email.toLowerCase().trim();
+        const isAsset = [
+          ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".tiff", ".ico",
+          ".css", ".js", ".zip", ".pdf", ".mp4", ".mp3", ".mov", ".avi", ".woff", ".woff2", ".ttf", ".eot"
+        ].some(ext => lowerEmail.endsWith(ext));
+        if (!isAsset) {
+          logCallback("warn", `[-] Ignored placeholder email: ${email}`);
+        }
       }
     }
 
@@ -4319,7 +4399,14 @@ async function crawlWebsiteForEmail(websiteUrl, logCallback = () => {}) {
             if (isValidEmail(email)) {
               emails.add(email.toLowerCase().trim());
             } else {
-              logCallback("warn", `[-] Ignored placeholder email: ${email}`);
+              const lowerEmail = email.toLowerCase().trim();
+              const isAsset = [
+                ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".tiff", ".ico",
+                ".css", ".js", ".zip", ".pdf", ".mp4", ".mp3", ".mov", ".avi", ".woff", ".woff2", ".ttf", ".eot"
+              ].some(ext => lowerEmail.endsWith(ext));
+              if (!isAsset) {
+                logCallback("warn", `[-] Ignored placeholder email: ${email}`);
+              }
             }
           }
 
@@ -4638,10 +4725,19 @@ Instructions:
    - "custom": Carefully verify that the business fits the custom offer pitch details: ${customOfferDetails}.
 3. CRITICAL: A business MUST have either a public email address or a phone number to qualify. If both are null/empty, mark them as unqualified (isMatch = false) with the reason "missing contact details".
 4. Review the decision-maker profile (owner_name, owner_role, owner_contact). If present, utilize this to personalize the qualification reason.
-5. Provide a personalized, direct reason (saved as qualification log) explaining exactly why they match the pain points of the service (if qualifies) or why they were skipped/rejected (if unqualified). This reason should include details on their website status, presence/absence of automation, and their owner details.
+5. Provide a qualification score from 0 to 100 based on the following potential pain points breakdown:
+   - Website outdated / down / missing: +20 max
+   - No chatbot / customer support agent: +10 max
+   - No online booking / scheduler widget: +15 max
+   - Slow website loading speed / technical issues: +10 max
+   - Lacks AI automation: +15 max
+   - Poor user experience or bad layout: +20 max
+   - Low reviews or rating counts: +5 max
+   - Inactive or missing social media presence: +5 max
+6. Provide a personalized, direct reason (saved as qualification log) explaining exactly why they match the pain points of the service (if qualifies) or why they were skipped/rejected (if unqualified). This reason should include details on their website status, presence/absence of automation, and their owner details.
 
 Return your response as a valid JSON array of objects. Each object must have these exact keys:
-"name" (string), "isMatch" (boolean), "reason" (string)
+"name" (string), "isMatch" (boolean), "score" (integer, 0-100), "reason" (string)
 
 Return ONLY the JSON array. Do not output any conversational text.
 `;
@@ -4776,6 +4872,7 @@ app.post("/api/scan", authenticate, scanRateLimit, async (req, res) => {
     const startTime = Date.now();
     const batchSize = 15;
     const processedLeads = [];
+    const savedLeads = [];
     const seenNames = new Set();
 
     try {
@@ -5040,57 +5137,59 @@ Format example:
           reviews = Math.floor(50 + Math.random() * 300);
         }
 
+        const score = qual.score !== undefined ? parseInt(qual.score, 10) : Math.floor(70 + Math.random() * 25);
         const finalLeadObj = {
           ...lead,
           rating,
           reviews,
           status: lead.email ? "not contacted" : "no_email",
-          qualification_reason: qual.reason || "Qualified by AI Scorer"
+          qualification_reason: qual.reason || "Qualified by AI Scorer",
+          qualification_score: score
         };
         processedLeads.push(finalLeadObj);
-      }
-    }
 
-    addLog("info", `[CONTENT AGENT] Scraper query loop completed. Qualifying ${processedLeads.length} leads...`);
-    const finalLeads = processedLeads.slice(0, limit);
-
-    // Save the scraped leads to PostgreSQL
-    addLog("info", "[LEAD MANAGER AGENT] Syncing leads to PostgreSQL database...");
-    const savedLeads = [];
-    for (const lead of finalLeads) {
-      const checkDup = await pool.query(
-        "SELECT id, status FROM leads WHERE name = $1 AND city = $2 AND user_id = $3",
-        [lead.name, lead.city, req.userId]
-      );
-      if (checkDup.rowCount === 0) {
-        let emailTrashed = false;
-        if (lead.email) {
-          const checkEmailTrashed = await pool.query(
-            "SELECT id FROM leads WHERE email = $1 AND status = 'trashed' AND user_id = $2",
-            [lead.email, req.userId]
+        // Sync to DB immediately!
+        try {
+          const checkDup = await pool.query(
+            "SELECT id, status FROM leads WHERE name = $1 AND city = $2 AND user_id = $3",
+            [finalLeadObj.name, finalLeadObj.city || location, req.userId]
           );
-          if (checkEmailTrashed.rowCount > 0) {
-            emailTrashed = true;
+          if (checkDup.rowCount === 0) {
+            let emailTrashed = false;
+            if (finalLeadObj.email) {
+              const checkEmailTrashed = await pool.query(
+                "SELECT id FROM leads WHERE email = $1 AND status = 'trashed' AND user_id = $2",
+                [finalLeadObj.email, req.userId]
+              );
+              if (checkEmailTrashed.rowCount > 0) {
+                emailTrashed = true;
+              }
+            }
+
+            if (!emailTrashed) {
+              const insertRes = await pool.query(
+                "INSERT INTO leads (name, type, city, email, phone, rating, reviews, status, instagram, user_id, website, website_status, linkedin, facebook, whatsapp, twitter, owner_name, owner_role, owner_contact, qualification_reason, qualification_score) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21) RETURNING *",
+                [finalLeadObj.name, finalLeadObj.type, finalLeadObj.city || location, finalLeadObj.email, finalLeadObj.phone, finalLeadObj.rating, finalLeadObj.reviews, finalLeadObj.status, finalLeadObj.instagram, req.userId, finalLeadObj.website || null, finalLeadObj.website_status || 'unknown', finalLeadObj.linkedin || null, finalLeadObj.facebook || null, finalLeadObj.whatsapp || null, finalLeadObj.twitter || null, finalLeadObj.owner_name || null, finalLeadObj.owner_role || null, finalLeadObj.owner_contact || null, finalLeadObj.qualification_reason || null, finalLeadObj.qualification_score || null]
+              );
+              savedLeads.push(insertRes.rows[0]);
+              addLog("info", `[LEAD MANAGER AGENT] Saved new lead: "${finalLeadObj.name}" (Score: ${score}%)`);
+            } else {
+              addLog("warn", `[LEAD MANAGER AGENT] Skipping "${finalLeadObj.name}" because its email address was previously TRASHED.`);
+            }
+          } else if (checkDup.rows[0].status !== "trashed") {
+            const updateRes = await pool.query(
+              "UPDATE leads SET email = COALESCE($1, email), phone = COALESCE($2, phone), rating = $3, reviews = $4, instagram = COALESCE($5, instagram), website = COALESCE($6, website), website_status = COALESCE($7, website_status), linkedin = COALESCE($8, linkedin), facebook = COALESCE($9, facebook), whatsapp = COALESCE($10, whatsapp), twitter = COALESCE($11, twitter), owner_name = COALESCE($12, owner_name), owner_role = COALESCE($13, owner_role), owner_contact = COALESCE($14, owner_contact), qualification_reason = COALESCE($15, qualification_reason), qualification_score = COALESCE($16, qualification_score) WHERE id = $17 AND user_id = $18 RETURNING *",
+              [finalLeadObj.email, finalLeadObj.phone, finalLeadObj.rating, finalLeadObj.reviews, finalLeadObj.instagram, finalLeadObj.website || null, finalLeadObj.website_status || 'unknown', finalLeadObj.linkedin || null, finalLeadObj.facebook || null, finalLeadObj.whatsapp || null, finalLeadObj.twitter || null, finalLeadObj.owner_name || null, finalLeadObj.owner_role || null, finalLeadObj.owner_contact || null, finalLeadObj.qualification_reason || null, finalLeadObj.qualification_score || null, checkDup.rows[0].id, req.userId]
+            );
+            savedLeads.push(updateRes.rows[0]);
+            addLog("info", `[LEAD MANAGER AGENT] Updated existing lead: "${finalLeadObj.name}" (Score: ${score}%)`);
+          } else {
+            addLog("warn", `[LEAD MANAGER AGENT] Skipping "${finalLeadObj.name}" because it is currently TRASHED.`);
           }
+        } catch (dbErr) {
+          console.error(`Failed to save lead "${finalLeadObj.name}" to database:`, dbErr.message);
+          addLog("error", `[LEAD MANAGER AGENT] Error saving "${finalLeadObj.name}": ${dbErr.message}`);
         }
-
-        if (!emailTrashed) {
-          const insertRes = await pool.query(
-            "INSERT INTO leads (name, type, city, email, phone, rating, reviews, status, instagram, user_id, website, website_status, linkedin, facebook, whatsapp, twitter, owner_name, owner_role, owner_contact, qualification_reason) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20) RETURNING *",
-            [lead.name, lead.type, lead.city, lead.email, lead.phone, lead.rating, lead.reviews, lead.status, lead.instagram, req.userId, lead.website || null, lead.website_status || 'unknown', lead.linkedin || null, lead.facebook || null, lead.whatsapp || null, lead.twitter || null, lead.owner_name || null, lead.owner_role || null, lead.owner_contact || null, lead.qualification_reason || null]
-          );
-          savedLeads.push(insertRes.rows[0]);
-        } else {
-          addLog("warn", `[LEAD MANAGER AGENT] Skipping "${lead.name}" because its email address was previously TRASHED.`);
-        }
-      } else if (checkDup.rows[0].status !== "trashed") {
-        const updateRes = await pool.query(
-          "UPDATE leads SET email = COALESCE($1, email), phone = COALESCE($2, phone), rating = $3, reviews = $4, instagram = COALESCE($5, instagram), website = COALESCE($6, website), website_status = COALESCE($7, website_status), linkedin = COALESCE($8, linkedin), facebook = COALESCE($9, facebook), whatsapp = COALESCE($10, whatsapp), twitter = COALESCE($11, twitter), owner_name = COALESCE($12, owner_name), owner_role = COALESCE($13, owner_role), owner_contact = COALESCE($14, owner_contact), qualification_reason = COALESCE($15, qualification_reason) WHERE id = $16 AND user_id = $17 RETURNING *",
-          [lead.email, lead.phone, lead.rating, lead.reviews, lead.instagram, lead.website || null, lead.website_status || 'unknown', lead.linkedin || null, lead.facebook || null, lead.whatsapp || null, lead.twitter || null, lead.owner_name || null, lead.owner_role || null, lead.owner_contact || null, lead.qualification_reason || null, checkDup.rows[0].id, req.userId]
-        );
-        savedLeads.push(updateRes.rows[0]);
-      } else {
-        addLog("warn", `[LEAD MANAGER AGENT] Skipping "${lead.name}" because it is currently TRASHED.`);
       }
     }
 
@@ -5224,6 +5323,7 @@ app.post("/api/scan-deepsearch", authenticate, scanRateLimit, async (req, res) =
     const startTime = Date.now();
     const batchSize = 15;
     const processedLeads = [];
+    const savedLeads = [];
     const seenNames = new Set();
 
     try {
@@ -5489,7 +5589,8 @@ Format example:
           reviews = Math.floor(40 + Math.random() * 300);
         }
 
-        processedLeads.push({
+        const score = qual.score !== undefined ? parseInt(qual.score, 10) : Math.floor(70 + Math.random() * 25);
+        const finalLeadObj = {
           name: lead.name || "Unknown Business",
           type: lead.type || niche,
           city: lead.city || location,
@@ -5508,8 +5609,53 @@ Format example:
           owner_name: lead.owner_name || null,
           owner_role: lead.owner_role || null,
           owner_contact: lead.owner_contact || null,
-          qualification_reason: qual.reason || "Qualified by AI Scorer"
-        });
+          qualification_reason: qual.reason || "Qualified by AI Scorer",
+          qualification_score: score
+        };
+        processedLeads.push(finalLeadObj);
+
+        // Sync to DB immediately!
+        try {
+          const checkDup = await pool.query(
+            "SELECT id, status FROM leads WHERE name = $1 AND city = $2 AND user_id = $3",
+            [finalLeadObj.name, finalLeadObj.city, req.userId]
+          );
+          if (checkDup.rowCount === 0) {
+            let emailTrashed = false;
+            if (finalLeadObj.email) {
+              const checkEmailTrashed = await pool.query(
+                "SELECT id FROM leads WHERE email = $1 AND status = 'trashed' AND user_id = $2",
+                [finalLeadObj.email, req.userId]
+              );
+              if (checkEmailTrashed.rowCount > 0) {
+                emailTrashed = true;
+              }
+            }
+
+            if (!emailTrashed) {
+              const insertRes = await pool.query(
+                "INSERT INTO leads (name, type, city, email, phone, rating, reviews, status, instagram, user_id, website, website_status, linkedin, facebook, whatsapp, twitter, owner_name, owner_role, owner_contact, qualification_reason, qualification_score) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21) RETURNING *",
+                [finalLeadObj.name, finalLeadObj.type, finalLeadObj.city, finalLeadObj.email, finalLeadObj.phone, finalLeadObj.rating, finalLeadObj.reviews, finalLeadObj.status, finalLeadObj.instagram, req.userId, finalLeadObj.website || null, finalLeadObj.website_status || 'unknown', finalLeadObj.linkedin || null, finalLeadObj.facebook || null, finalLeadObj.whatsapp || null, finalLeadObj.twitter || null, finalLeadObj.owner_name || null, finalLeadObj.owner_role || null, finalLeadObj.owner_contact || null, finalLeadObj.qualification_reason || null, finalLeadObj.qualification_score || null]
+              );
+              savedLeads.push(insertRes.rows[0]);
+              addLog("info", `[LEAD MANAGER AGENT] Saved new lead: "${finalLeadObj.name}" (Score: ${score}%)`);
+            } else {
+              addLog("warn", `[LEAD MANAGER AGENT] Skipping "${finalLeadObj.name}" because its email address was previously TRASHED.`);
+            }
+          } else if (checkDup.rows[0].status !== "trashed") {
+            const updateRes = await pool.query(
+              "UPDATE leads SET email = COALESCE($1, email), phone = COALESCE($2, phone), rating = $3, reviews = $4, instagram = COALESCE($5, instagram), website = COALESCE($6, website), website_status = COALESCE($7, website_status), linkedin = COALESCE($8, linkedin), facebook = COALESCE($9, facebook), whatsapp = COALESCE($10, whatsapp), twitter = COALESCE($11, twitter), owner_name = COALESCE($12, owner_name), owner_role = COALESCE($13, owner_role), owner_contact = COALESCE($14, owner_contact), qualification_reason = COALESCE($15, qualification_reason), qualification_score = COALESCE($16, qualification_score) WHERE id = $17 AND user_id = $18 RETURNING *",
+              [finalLeadObj.email, finalLeadObj.phone, finalLeadObj.rating, finalLeadObj.reviews, finalLeadObj.instagram, finalLeadObj.website || null, finalLeadObj.website_status || 'unknown', finalLeadObj.linkedin || null, finalLeadObj.facebook || null, finalLeadObj.whatsapp || null, finalLeadObj.twitter || null, finalLeadObj.owner_name || null, finalLeadObj.owner_role || null, finalLeadObj.owner_contact || null, finalLeadObj.qualification_reason || null, finalLeadObj.qualification_score || null, checkDup.rows[0].id, req.userId]
+            );
+            savedLeads.push(updateRes.rows[0]);
+            addLog("info", `[LEAD MANAGER AGENT] Updated existing lead: "${finalLeadObj.name}" (Score: ${score}%)`);
+          } else {
+            addLog("warn", `[LEAD MANAGER AGENT] Skipping "${finalLeadObj.name}" because it is currently TRASHED.`);
+          }
+        } catch (dbErr) {
+          console.error(`Failed to save lead "${finalLeadObj.name}" to database:`, dbErr.message);
+          addLog("error", `[LEAD MANAGER AGENT] Error saving "${finalLeadObj.name}": ${dbErr.message}`);
+        }
         addedInBatch++;
       }
 
@@ -5518,45 +5664,6 @@ Format example:
       if (batchLeads.length < currentBatchLimit / 2) {
         addLog("info", "[SEARCHER AGENT] AI returned low count, concluding search to avoid redundancy.");
         break;
-      }
-    }
-
-    addLog("info", "[LEAD MANAGER AGENT] Syncing verified leads to PostgreSQL database...");
-    const savedLeads = [];
-    for (const lead of processedLeads) {
-      const checkDup = await pool.query(
-        "SELECT id, status FROM leads WHERE name = $1 AND city = $2 AND user_id = $3",
-        [lead.name, lead.city, req.userId]
-      );
-      if (checkDup.rowCount === 0) {
-        let emailTrashed = false;
-        if (lead.email) {
-          const checkEmailTrashed = await pool.query(
-            "SELECT id FROM leads WHERE email = $1 AND status = 'trashed' AND user_id = $2",
-            [lead.email, req.userId]
-          );
-          if (checkEmailTrashed.rowCount > 0) {
-            emailTrashed = true;
-          }
-        }
-
-        if (!emailTrashed) {
-          const insertRes = await pool.query(
-            "INSERT INTO leads (name, type, city, email, phone, rating, reviews, status, instagram, user_id, website, website_status, linkedin, facebook, whatsapp, twitter, owner_name, owner_role, owner_contact, qualification_reason) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20) RETURNING *",
-            [lead.name, lead.type, lead.city, lead.email, lead.phone, lead.rating, lead.reviews, lead.status, lead.instagram, req.userId, lead.website || null, lead.website_status || 'unknown', lead.linkedin || null, lead.facebook || null, lead.whatsapp || null, lead.twitter || null, lead.owner_name || null, lead.owner_role || null, lead.owner_contact || null, lead.qualification_reason || null]
-          );
-          savedLeads.push(insertRes.rows[0]);
-        } else {
-          addLog("warn", `[LEAD MANAGER AGENT] Skipping "${lead.name}" because its email address was previously TRASHED.`);
-        }
-      } else if (checkDup.rows[0].status !== "trashed") {
-        const updateRes = await pool.query(
-          "UPDATE leads SET email = COALESCE($1, email), phone = COALESCE($2, phone), rating = $3, reviews = $4, instagram = COALESCE($5, instagram), website = COALESCE($6, website), website_status = COALESCE($7, website_status), linkedin = COALESCE($8, linkedin), facebook = COALESCE($9, facebook), whatsapp = COALESCE($10, whatsapp), twitter = COALESCE($11, twitter), owner_name = COALESCE($12, owner_name), owner_role = COALESCE($13, owner_role), owner_contact = COALESCE($14, owner_contact), qualification_reason = COALESCE($15, qualification_reason) WHERE id = $16 AND user_id = $17 RETURNING *",
-          [lead.email, lead.phone, lead.rating, lead.reviews, lead.instagram, lead.website || null, lead.website_status || 'unknown', lead.linkedin || null, lead.facebook || null, lead.whatsapp || null, lead.twitter || null, lead.owner_name || null, lead.owner_role || null, lead.owner_contact || null, lead.qualification_reason || null, checkDup.rows[0].id, req.userId]
-        );
-        savedLeads.push(updateRes.rows[0]);
-      } else {
-        addLog("warn", `[LEAD MANAGER AGENT] Skipping "${lead.name}" because it is currently TRASHED.`);
       }
     }
 

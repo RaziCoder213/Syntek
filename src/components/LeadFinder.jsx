@@ -398,12 +398,27 @@ function LeadDetailDrawer({ lead, onClose, onDraftEmail, onUpdateStatus }) {
                   { label: "Phone", value: lead.phone || "—", mono: true },
                   { label: "Rating", value: lead.rating ? `${lead.rating} ⭐` : "—" },
                   { label: "Reviews", value: lead.reviews ? `${lead.reviews}` : "—" },
+                  { label: "AI Match Score", value: lead.qualification_score !== null && lead.qualification_score !== undefined ? `🎯 ${lead.qualification_score}%` : "—" },
                   { label: "Location", value: lead.city || "—" },
                   { label: "Category", value: lead.type || "—" },
+                  {
+                    label: "Email Open Status",
+                    value: lead.status !== "not contacted" && lead.status !== "new" && lead.status !== "no_email" && lead.email
+                      ? (lead.is_opened ? "👁️ Opened" : "📩 Unopened")
+                      : "—",
+                    color: lead.is_opened ? "#84cc16" : lead.email && lead.status !== "not contacted" ? "#f59e0b" : undefined
+                  },
+                  {
+                    label: "Opened At",
+                    value: lead.opened_at
+                      ? new Date(lead.opened_at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+                      : "—",
+                    color: lead.opened_at ? "#84cc16" : undefined
+                  },
                 ].map(item => (
                   <div key={item.label} style={{ background: "var(--bg-overlay)", padding: "10px 12px", borderRadius: "var(--radius-md)" }}>
                     <div style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--text-4)", marginBottom: 4 }}>{item.label}</div>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)", fontFamily: item.mono ? "var(--font-mono)" : undefined, wordBreak: "break-all" }}>{item.value}</div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: item.color || "var(--text-1)", fontFamily: item.mono ? "var(--font-mono)" : undefined, wordBreak: "break-all" }}>{item.value}</div>
                   </div>
                 ))}
               </div>
@@ -561,6 +576,216 @@ function LeadDetailDrawer({ lead, onClose, onDraftEmail, onUpdateStatus }) {
   );
 }
 
+const POPULAR_NICHES = [
+  // Food & Beverage
+  "Cafes & Brunch", "Restaurants", "Bakeries", "Bars & Pubs", "Coffee Shops", 
+  "Pizza Places", "Sushi Bars", "Steakhouses", "Fast Food", "Juice Bars", 
+  "Ice Cream Shops", "Food Trucks", "Breweries", "Wineries", "Diners",
+  // Medical & Healthcare
+  "Dental Clinics", "Medical Clinics", "Pediatricians", "Chiropractors", 
+  "Physiotherapists", "Optometrists", "Dermatologists", "Orthodontists", 
+  "Plastic Surgeons", "Cardiologists", "Veterinarians", "Animal Hospitals", 
+  "Pharmacies", "Psychologists", "Podiatrists", "Acupuncturists",
+  // Beauty & Wellness
+  "Hair Salons", "Nail Salons", "Beauty Salons", "Spas & Wellness", 
+  "Massage Therapists", "Barbershops", "Estheticians", "Yoga Studios", 
+  "Pilates Studios", "Fitness Centers", "Gyms", "Personal Trainers", 
+  "Martial Arts Studios", "Tanning Salons", "Tattoo Shops",
+  // Home Services
+  "Plumbers", "Electricians", "HVAC Contractors", "House Cleaning", 
+  "Landscaping Services", "Roofers", "Painters", "Pest Control", 
+  "Handyman Services", "Locksmiths", "Carpenters", "Masonry Contractors", 
+  "Window Cleaning", "Carpet Cleaning", "Moving Companies", "Pool Maintenance",
+  // Professional Services
+  "Law Firms", "Accountants", "Tax Services", "Real Estate Agencies", 
+  "Insurance Brokers", "Financial Advisors", "Marketing Agencies", 
+  "Web Design Agencies", "Consulting Firms", "Recruiting Agencies", 
+  "Translation Services", "IT Support Services", "Coworking Spaces",
+  // Retail & Local Shops
+  "Boutiques", "Jewelry Stores", "Flower Shops", "Bookstores", "Toy Stores", 
+  "Pet Shops", "Bicycle Shops", "Auto Repair Shops", "Car Dealerships", 
+  "Car Wash & Detailing", "Tire Shops", "Hardware Stores", "Furniture Stores", 
+  "Gift Shops", "Grocery Stores",
+  // Education & Training
+  "Daycare Centers", "Preschools", "Private Schools", "Tutoring Centers", 
+  "Music Schools", "Dance Academies", "Driving Schools", "Art Classes", 
+  "Language Schools", "Test Preparation",
+  // Entertainment & Leisure
+  "Hotels", "Motels", "Hostels", "Bed & Breakfasts", "Travel Agencies", 
+  "Event Planners", "Wedding Venues", "Photography Studios", "Art Galleries", 
+  "Cinemas", "Bowling Alleys", "Golf Courses", "Escape Rooms", "Kids Play Centers"
+];
+
+const COUNTRIES = [
+  "United States", "Canada", "United Kingdom", "Australia", 
+  "Germany", "France", "United Arab Emirates", "Pakistan", "India", "Singapore"
+];
+
+const STATES_BY_COUNTRY = {
+  "United States": [
+    "Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado", "Connecticut", "Delaware", "Florida", "Georgia", 
+    "Hawaii", "Idaho", "Illinois", "Indiana", "Iowa", "Kansas", "Kentucky", "Louisiana", "Maine", "Maryland", 
+    "Massachusetts", "Michigan", "Minnesota", "Mississippi", "Missouri", "Montana", "Nebraska", "Nevada", "New Hampshire", "New Jersey", 
+    "New Mexico", "New York", "North Carolina", "North Dakota", "Ohio", "Oklahoma", "Oregon", "Pennsylvania", "Rhode Island", "South Carolina", 
+    "South Dakota", "Tennessee", "Texas", "Utah", "Vermont", "Virginia", "Washington", "West Virginia", "Wisconsin", "Wyoming"
+  ],
+  "Canada": [
+    "Alberta", "British Columbia", "Manitoba", "New Brunswick", "Newfoundland and Labrador", "Nova Scotia", "Ontario", "Prince Edward Island", "Quebec", "Saskatchewan"
+  ],
+  "United Kingdom": [
+    "England", "Scotland", "Wales", "Northern Ireland"
+  ],
+  "Australia": [
+    "New South Wales", "Queensland", "South Australia", "Tasmania", "Victoria", "Western Australia"
+  ],
+  "Pakistan": [
+    "Sindh", "Punjab", "Khyber Pakhtunkhwa", "Balochistan"
+  ],
+  "India": [
+    "Maharashtra", "Delhi", "Karnataka", "Tamil Nadu", "West Bengal", "Gujarat", "Uttar Pradesh", "Rajasthan", "Punjab", "Haryana"
+  ]
+};
+
+const CITIES_BY_STATE = {
+  // US
+  "Texas": ["Austin", "Dallas", "Houston", "San Antonio", "Fort Worth", "Denton", "El Paso", "Arlington", "Corpus Christi", "Plano", "Lubbock", "Garland", "Irving", "Laredo", "Amarillo", "McKinney", "Frisco", "Grand Prairie", "Brownsville", "Pasadena"],
+  "California": ["Los Angeles", "San Francisco", "San Diego", "San Jose", "Sacramento", "Fresno", "Oakland", "Anaheim", "Bakersfield", "Riverside", "Stockton", "Irvine", "Chula Vista", "Fremont", "Santa Clarita"],
+  "New York": ["New York City", "Buffalo", "Rochester", "Yonkers", "Syracuse", "Albany", "New Rochelle", "Mount Vernon", "Schenectady", "Utica"],
+  "Florida": ["Miami", "Orlando", "Tampa", "Jacksonville", "Tallahassee", "Fort Lauderdale", "St. Petersburg", "Hialeah", "Port St. Lucie", "Cape Coral", "Pembroke Pines"],
+  "Washington": ["Seattle", "Spokane", "Tacoma", "Vancouver", "Bellevue", "Kent", "Everett", "Renton", "Federal Way", "Yakima"],
+  "Colorado": ["Denver", "Colorado Springs", "Aurora", "Fort Collins", "Lakewood", "Thornton", "Arvada", "Westminster", "Pueblo", "Centennial"],
+  
+  // Canada
+  "Ontario": ["Toronto", "Ottawa", "Mississauga", "Brampton", "Hamilton", "London", "Markham", "Vaughan", "Kitchener", "Windsor"],
+  "Quebec": ["Montreal", "Quebec City", "Laval", "Gatineau", "Longueuil", "Sherbrooke", "Saguenay", "Levis", "Trois-Rivieres", "Terrebonne"],
+  "British Columbia": ["Vancouver", "Surrey", "Burnaby", "Richmond", "Coquitlam", "Kelowna", "Abbotsford", "Kamloops", "Victoria", "Nanaimo"],
+
+  // UK
+  "England": ["London", "Birmingham", "Manchester", "Leeds", "Liverpool", "Newcastle", "Sheffield", "Bristol", "Nottingham", "Leicester"],
+  "Scotland": ["Glasgow", "Edinburgh", "Aberdeen", "Dundee", "Inverness", "Perth", "Stirling"],
+
+  // Australia
+  "New South Wales": ["Sydney", "Newcastle", "Wollongong", "Central Coast", "Maitland", "Tweed Heads"],
+  "Victoria": ["Melbourne", "Geelong", "Ballarat", "Bendigo", "Melton", "Shepparton"],
+
+  // Pakistan
+  "Sindh": ["Karachi", "Hyderabad", "Sukkur", "Larkana", "Mirpur Khas", "Nawabshah"],
+  "Punjab": ["Lahore", "Faisalabad", "Rawalpindi", "Multan", "Gujranwala", "Sialkot", "Bahawalpur", "Sargodha"],
+
+  // India
+  "Maharashtra": ["Mumbai", "Pune", "Nagpur", "Thane", "Pimpri-Chinchwad", "Nashik", "Kalyan-Dombivli", "Vasai-Virar", "Aurangabad", "Navi Mumbai"],
+  "Delhi": ["New Delhi", "Noida", "Gurgaon", "Faridabad", "Ghaziabad"],
+  "Karnataka": ["Bangalore", "Hubli-Dharwad", "Mysore", "Kalaburagi", "Belagavi", "Mangalore"]
+};
+
+const STATE_CODES = {
+  "Alabama": "AL", "Alaska": "AK", "Arizona": "AZ", "Arkansas": "AR", "California": "CA", "Colorado": "CO", "Connecticut": "CT", "Delaware": "DE", "Florida": "FL", "Georgia": "GA", "Hawaii": "HI", "Idaho": "ID", "Illinois": "IL", "Indiana": "IN", "Iowa": "IA", "Kansas": "KS", "Kentucky": "KY", "Louisiana": "LA", "Maine": "ME", "Maryland": "MD", "Massachusetts": "MA", "Michigan": "MI", "Minnesota": "MN", "Mississippi": "MS", "Missouri": "MO", "Montana": "MT", "Nebraska": "NE", "Nevada": "NV", "New Hampshire": "NH", "New Jersey": "NJ", "New Mexico": "NM", "New York": "NY", "North Carolina": "NC", "North Dakota": "ND", "Ohio": "OH", "Oklahoma": "OK", "Oregon": "OR", "Pennsylvania": "PA", "Rhode Island": "RI", "South Carolina": "SC", "South Dakota": "SD", "Tennessee": "TN", "Texas": "TX", "Utah": "UT", "Vermont": "VT", "Virginia": "VA", "Washington": "WA", "West Virginia": "WV", "Wisconsin": "WI", "Wyoming": "WY"
+};
+
+/* ─── Custom Searchable Select Dropdown ─── */
+function SearchableSelect({ label, value, onChange, options = [], placeholder, allowCustom = false }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const containerRef = useRef(null);
+
+  useEffect(() => {
+    function handleClickOutside(event) {
+      if (containerRef.current && !containerRef.current.contains(event.target)) {
+        setIsOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const filteredOptions = options.filter(opt =>
+    opt.toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <div className="searchable-select-container" ref={containerRef} style={{ position: "relative", display: "flex", flexDirection: "column", gap: 4 }}>
+      {label && <label className="input-label">{label}</label>}
+      <div 
+        className="searchable-select-trigger input input-sm" 
+        onClick={() => setIsOpen(!isOpen)}
+        style={{
+          display: "flex", justifyContent: "space-between", alignItems: "center",
+          cursor: "pointer", fontSize: "13px"
+        }}
+      >
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{value || placeholder}</span>
+        <span style={{ fontSize: "10px", color: "var(--text-3)" }}>▼</span>
+      </div>
+      
+      {isOpen && (
+        <div 
+          className="searchable-select-dropdown"
+          style={{
+            position: "absolute", top: "100%", left: 0, right: 0, zIndex: 1000,
+            background: "var(--bg-overlay)", border: "1px solid var(--border-1)",
+            borderRadius: "6px", marginTop: "4px", maxHeight: "200px", overflowY: "auto",
+            boxShadow: "0 4px 12px rgba(0,0,0,0.15)"
+          }}
+        >
+          <input
+            type="text"
+            className="input input-sm"
+            style={{ width: "90%", margin: "6px 5%", padding: "4px 8px", fontSize: "12.5px" }}
+            placeholder="Search or filter..."
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            onClick={e => e.stopPropagation()}
+            autoFocus
+          />
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            {filteredOptions.map((opt) => (
+              <div
+                key={opt}
+                onClick={() => {
+                  onChange(opt);
+                  setIsOpen(false);
+                  setSearch("");
+                }}
+                style={{
+                  padding: "6px 12px", fontSize: "12.5px", cursor: "pointer",
+                  background: value === opt ? "var(--color-indigo)" : "transparent",
+                  color: value === opt ? "white" : "var(--text-1)"
+                }}
+                onMouseEnter={e => {
+                  if (value !== opt) e.target.style.background = "var(--bg-translucent-mild)";
+                }}
+                onMouseLeave={e => {
+                  if (value !== opt) e.target.style.background = "transparent";
+                }}
+              >
+                {opt}
+              </div>
+            ))}
+            {filteredOptions.length === 0 && (
+              allowCustom && search.trim() ? (
+                <div
+                  onClick={() => {
+                    onChange(search.trim());
+                    setIsOpen(false);
+                    setSearch("");
+                  }}
+                  style={{ padding: "8px 12px", fontSize: "13px", cursor: "pointer", color: "var(--brand)" }}
+                >
+                  ➕ Add custom: "{search.trim()}"
+                </div>
+              ) : (
+                <div style={{ padding: "12px", fontSize: "12px", color: "var(--text-3)", textAlign: "center" }}>
+                  No results found
+                </div>
+              )
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ─── Main LeadFinder ─── */
 export default function LeadFinder({ leads, setLeads, settings, showToast }) {
   /* Config state - Persisted in localStorage so tab switching doesn't reset them */
@@ -613,6 +838,26 @@ export default function LeadFinder({ leads, setLeads, settings, showToast }) {
       return saved && JSON.parse(saved).strictFilter !== undefined ? JSON.parse(saved).strictFilter : true;
     } catch { return true; }
   });
+
+  const [selectedCountry, setSelectedCountry] = useState("United States");
+  const [selectedState, setSelectedState]     = useState("Texas");
+  const [selectedCity, setSelectedCity]       = useState("Austin");
+
+  const handleCountryChange = (country) => {
+    setSelectedCountry(country);
+    const states = STATES_BY_COUNTRY[country] || [];
+    const nextState = states[0] || "";
+    setSelectedState(nextState);
+    const cities = CITIES_BY_STATE[nextState] || [];
+    setSelectedCity(cities[0] || "");
+  };
+
+  const handleStateChange = (state) => {
+    setSelectedState(state);
+    const cities = CITIES_BY_STATE[state] || [];
+    setSelectedCity(cities[0] || "");
+  };
+
 
   /* Save config changes to localStorage automatically */
   useEffect(() => {
@@ -1028,30 +1273,89 @@ Rules:
         <div style={{ fontWeight: 700, fontSize: 14, color: "var(--text-1)" }}>Scrape Config</div>
 
         {/* Niche */}
-        <div className="input-group">
-          <label className="input-label">Target Niche</label>
-          <input className="input input-sm" placeholder="e.g. Hair Salons, Gyms..." value={niche} onChange={e => setNiche(e.target.value)} />
+        <div className="input-group" style={{ zIndex: 10 }}>
+          <SearchableSelect 
+            label="Target Niche" 
+            value={niche} 
+            onChange={setNiche} 
+            options={POPULAR_NICHES} 
+            placeholder="Select or search niche..." 
+            allowCustom={true} 
+          />
         </div>
 
         {/* Locations (multi-tag) */}
         <div className="input-group">
           <label className="input-label">Location(s)</label>
-          <div className="tag-input-wrap">
+          <div className="tag-input-wrap" style={{ marginBottom: 12 }}>
             {locations.map(l => (
               <span key={l} className="tag-chip">
                 {l}
                 <button className="tag-chip-remove" onClick={() => removeLoc(l)}>✕</button>
               </span>
             ))}
-            <input
-              className="tag-input"
-              placeholder="Add city..."
-              value={locInput}
-              onChange={e => setLocInput(e.target.value)}
-              onKeyDown={e => (e.key === "Enter" || e.key === ",") && (e.preventDefault(), addLoc())}
-            />
+            {locations.length === 0 && (
+              <span style={{ fontSize: 12, color: "var(--text-3)", padding: "4px 0" }}>No locations added yet</span>
+            )}
           </div>
-          {locInput && <button className="btn btn-ghost btn-sm" style={{ alignSelf: "flex-start" }} onClick={addLoc}>+ Add</button>}
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, background: "var(--bg-translucent-mild)", padding: 10, borderRadius: 8, border: "1px solid var(--border-subtle)", zIndex: 9 }}>
+            <SearchableSelect
+              label="Country"
+              value={selectedCountry}
+              onChange={handleCountryChange}
+              options={COUNTRIES}
+              placeholder="Select Country..."
+              allowCustom={true}
+            />
+            
+            {(STATES_BY_COUNTRY[selectedCountry] || []).length > 0 && (
+              <SearchableSelect
+                label="State / Province"
+                value={selectedState}
+                onChange={handleStateChange}
+                options={STATES_BY_COUNTRY[selectedCountry]}
+                placeholder="Select State..."
+                allowCustom={true}
+              />
+            )}
+
+            <SearchableSelect
+              label="City"
+              value={selectedCity}
+              onChange={setSelectedCity}
+              options={CITIES_BY_STATE[selectedState] || []}
+              placeholder="Select City..."
+              allowCustom={true}
+            />
+
+            <button
+              className="btn btn-lime btn-sm"
+              style={{ width: "100%", justifyContent: "center", marginTop: 4 }}
+              onClick={() => {
+                let locStr = "";
+                if (selectedCity && selectedState) {
+                  const stateCode = STATE_CODES[selectedState] || selectedState;
+                  locStr = `${selectedCity}, ${stateCode}`;
+                } else if (selectedCity) {
+                  locStr = `${selectedCity}, ${selectedCountry}`;
+                } else if (selectedState) {
+                  locStr = `${selectedState}, ${selectedCountry}`;
+                } else {
+                  locStr = selectedCountry;
+                }
+                
+                if (locStr && !locations.includes(locStr)) {
+                  setLocations(prev => [...prev, locStr]);
+                  showToast(`Added location: ${locStr}`, "success");
+                } else {
+                  showToast("Location already added or invalid.", "warning");
+                }
+              }}
+            >
+              + Add Location
+            </button>
+          </div>
         </div>
 
         {/* Leads slider */}
@@ -1244,6 +1548,7 @@ Rules:
                   <th>Contact</th>
                   <th>Website</th>
                   <th>Rating</th>
+                  <th>AI Score</th>
                   <th>Status</th>
                   <th>Actions</th>
                 </tr>
@@ -1284,9 +1589,40 @@ Rules:
                       </div>
                     </td>
                     <td>
-                      <span className={`badge ${statusColor[l.status] || "badge-neutral"}`}>
-                        {(l.status || "new").replace(/_/g, " ")}
-                      </span>
+                      {l.qualification_score !== null && l.qualification_score !== undefined ? (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                          <span style={{
+                            fontWeight: 700,
+                            fontSize: 12.5,
+                            color: l.qualification_score >= 80 ? "var(--brand)" : l.qualification_score >= 50 ? "var(--warning)" : "var(--danger)"
+                          }}>
+                            🎯 {l.qualification_score}%
+                          </span>
+                          <span style={{ fontSize: 9.5, color: "var(--text-4)", fontWeight: 500 }}>
+                            {l.qualification_score >= 80 ? "High Match" : l.qualification_score >= 50 ? "Med Match" : "Low Match"}
+                          </span>
+                        </div>
+                      ) : (
+                        <span style={{ fontSize: 12, color: "var(--text-4)" }}>—</span>
+                      )}
+                    </td>
+                    <td>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-start" }}>
+                        <span className={`badge ${statusColor[l.status] || "badge-neutral"}`}>
+                          {(l.status || "new").replace(/_/g, " ")}
+                        </span>
+                        {l.status !== "not contacted" && l.status !== "new" && l.status !== "no_email" && l.email && (
+                          <span style={{
+                            display: "inline-flex", alignItems: "center", gap: 3,
+                            padding: "2px 7px", borderRadius: "999px", fontSize: "10px", fontWeight: 700,
+                            background: l.is_opened ? "rgba(132,204,22,0.15)" : "rgba(245,158,11,0.1)",
+                            color: l.is_opened ? "var(--color-lime, #84cc16)" : "var(--color-amber, #f59e0b)",
+                            border: l.is_opened ? "1px solid rgba(132,204,22,0.3)" : "1px solid rgba(245,158,11,0.25)"
+                          }}>
+                            {l.is_opened ? "👁️ Opened" : "📩 Unread"}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td onClick={e => e.stopPropagation()}>
                       <div style={{ display: "flex", gap: 4 }}>
