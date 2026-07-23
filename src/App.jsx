@@ -258,7 +258,8 @@ export default function App() {
       }
       if (emailsRes.ok) {
         const d = await emailsRes.json();
-        setEmails(d.map(e => ({
+        const rows = Array.isArray(d) ? d : (d.emails || []);
+        setEmails(rows.map(e => ({
           // original DB fields (used by new Inbox.jsx)
           id: e.id,
           from_name:     e.from_name,
