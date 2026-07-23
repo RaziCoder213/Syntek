@@ -12,6 +12,7 @@ import dns from "dns";
 import { spawn } from "child_process";
 import bcryptjs from "bcryptjs";
 import jwt from "jsonwebtoken";
+import { runScraperPipeline } from "./services/pipelineService.js";
 
 dotenv.config();
 
@@ -789,6 +790,37 @@ async function setupDatabase() {
     `);
     // Index for fast follow-up queue lookups
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_leads_followup_queue ON leads(user_id, next_followup_at, status, followup_count);`);
+
+    // ── Noryvex Scraper & Enrichment Staging Migrations ──
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS raw_leads (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        niche VARCHAR(255),
+        location VARCHAR(255),
+        name VARCHAR(255) NOT NULL,
+        address TEXT,
+        phone VARCHAR(50),
+        website VARCHAR(255),
+        category VARCHAR(255),
+        rating NUMERIC(3,1),
+        reviews INTEGER,
+        source VARCHAR(255) DEFAULT 'google_maps',
+        source_url TEXT,
+        scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS has_booking_widget VARCHAR(50) DEFAULT 'unknown';`);
+    await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS address TEXT DEFAULT NULL;`);
+    await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS chat_widget VARCHAR(50) DEFAULT 'unknown';`);
+    await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS cms_platform VARCHAR(100) DEFAULT 'unknown';`);
+    await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS contact_method VARCHAR(50) DEFAULT 'unknown';`);
+    await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS enrichment_source_url TEXT DEFAULT NULL;`);
+    await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS enrichment_checked_at TIMESTAMP DEFAULT NULL;`);
+    await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS most_recent_review_at TIMESTAMP DEFAULT NULL;`);
+    await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS email_confirmed BOOLEAN DEFAULT TRUE;`);
+    await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS source_url TEXT DEFAULT NULL;`);
+    await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;`);
 
     console.log("PostgreSQL schema validated and multi-tenant migrations applied successfully.");
 
@@ -4838,12 +4870,12 @@ Return ONLY the JSON array. Do not output any conversational text.
 }
 
 app.post("/api/scan", authenticate, scanRateLimit, async (req, res) => {
-  const { niche, location, pitchOffer: reqPitchOffer, customOfferDetails: reqCustomOfferDetails, limit: reqLimit, requiredContact, strictFilter } = req.body;
+  const { niche, location, limit: reqLimit } = req.body;
 
   let scanId;
   try {
     const insertScan = await pool.query(
-      "INSERT INTO scans (user_id, status, logs) VALUES ($1, 'running', $2) RETURNING id",
+      "INSERT INTO scans (user_id, status, logs, progress) VALUES ($1, 'running', $2, 0) RETURNING id",
       [req.userId, JSON.stringify([{ type: "info", text: "Initializing scanner engine..." }])]
     );
     scanId = insertScan.rows[0].id;
@@ -4856,438 +4888,94 @@ app.post("/api/scan", authenticate, scanRateLimit, async (req, res) => {
   setImmediate(async () => {
     const searchLogs = [{ type: "info", text: "Initializing scanner engine..." }];
 
-    const addLog = (type, text) => {
+    const addLog = (text) => {
+      let type = "info";
+      if (text.includes("[WARN]")) {
+        type = "warn";
+      } else if (text.includes("[ERROR]") || text.includes("[danger]") || text.toLowerCase().includes("failed")) {
+        type = "danger";
+      } else if (text.includes("[SUCCESS]") || text.toLowerCase().includes("success") || text.toLowerCase().includes("saved")) {
+        type = "success";
+      }
+      
       console.log(`[SCAN LOG] [${type.toUpperCase()}] ${text}`);
       searchLogs.push({ type, text });
       
-      const currentProgress = (typeof processedLeads !== 'undefined')
-        ? Math.min(95, Math.round((processedLeads.length / limit) * 100))
-        : 5;
-
+      let progress = 5;
+      if (text.includes("Stage 1 Completed")) {
+        progress = 40;
+      } else if (text.includes("Pipeline finished")) {
+        progress = 100;
+      } else {
+        const leadMatch = text.match(/\[Lead\s+(\d+)\/(\d+)\]/i);
+        if (leadMatch) {
+          const current = parseInt(leadMatch[1], 10);
+          const total = parseInt(leadMatch[2], 10);
+          progress = 40 + Math.round((current / (total || 1)) * 55);
+        } else if (searchLogs.length > 2) {
+          progress = Math.min(35, 5 + Math.round(searchLogs.length * 1.5));
+        }
+      }
+      
       pool.query(
         "UPDATE scans SET logs = $1, progress = $2 WHERE id = $3",
-        [JSON.stringify(searchLogs), currentProgress, scanId]
-      ).catch(e => console.error("Failed to update scan logs:", e.message));
+        [JSON.stringify(searchLogs), progress, scanId]
+      ).catch(e => console.error("Failed to update scan logs in DB:", e.message));
     };
 
     try {
-    const settingsRes = await pool.query("SELECT * FROM campaign_settings WHERE user_id = $1 LIMIT 1", [req.userId]);
-    const config = decryptConfig(settingsRes.rows[0]) || {};
-    const apiKey = config.gemini_key || process.env.GEMINI_API_KEY || "local_antigravity";
-
-    addLog("info", `[SEARCHER AGENT] Launching Google Maps & Live Web Scraper for niche: '${niche}' in: '${location}'`);
-    addLog("info", "[SEARCHER AGENT] Querying Gemini API with Google Search grounding enabled...");
-
-    const userRes = await pool.query("SELECT subscription_tier FROM users WHERE id = $1", [req.userId]);
-    const userTier = userRes.rowCount > 0 ? (userRes.rows[0].subscription_tier || 'free').toLowerCase() : 'free';
-    let maxLimit = 5;
-    if (userTier === 'growth') maxLimit = 25;
-    else if (userTier === 'agency') maxLimit = 50;
-
-    addLog("info", `[BILLING GATE] Enforcing quota: subscription tier '${userTier}' (max ${maxLimit} leads per scan)`);
-
-    const limit = reqLimit ? Math.min(maxLimit, parseInt(reqLimit, 10)) : Math.min(maxLimit, config.daily_lead_limit || 8);
-    const pitchOffer = reqPitchOffer || config.pitch_offer || 'whatsapp_bot';
-    const customOfferDetails = reqCustomOfferDetails !== undefined ? reqCustomOfferDetails : (config.custom_offer_details || '');
-    const reqContactConstraint = requiredContact || config.required_contact || 'email_or_phone';
-
-    let targetingInstructions = "";
-    if (pitchOffer === "website_dev") {
-      targetingInstructions = `
-- SPECIAL SEARCH TARGETING: We are pitching website design and development services.
-  Therefore, prioritize finding businesses that lack an official website, or whose website is down/broken, or whose website is outdated/slow and would benefit from a website redesign.
-  DO NOT discard businesses that have active websites; classify them as "active" so we can pitch website redesigns, mobile optimization, or speed improvements.
-  SEARCH STRATEGY: Formulate your Google Search queries to find local businesses (e.g. search "${niche} in ${location}"). Review the search results to find businesses that list a website, a Facebook page, or an Instagram profile.
-  In your search grounding, check the status of their website. Set "website_status" to "no_website" if they lack one altogether, "down" if it is broken/inaccessible, or "active" if it is working.`;
-    } else if (pitchOffer === "whatsapp_bot") {
-      targetingInstructions = `
-- SPECIAL SEARCH TARGETING: We are pitching WhatsApp booking bots and table reservation automations.
-  Therefore, you MUST ONLY return popular businesses (e.g. cafes, restaurants, brunch spots, salons, spas) that would benefit from automated reservation booking AND do NOT already have an online booking link or scheduler widget (like Calendly, Acuity, Resy, OpenTable) on their website.
-  If they already have booking automation, skip them. Set "website_status" to "active" if they have a website, or "no_website" otherwise.`;
-    } else if (pitchOffer === "ai_chatbot") {
-      targetingInstructions = `
-- SPECIAL SEARCH TARGETING: We are pitching AI Chatbot customer support agents for Google Profile/Instagram.
-  Therefore, prioritize finding businesses that have an active Instagram handle or Google Map listing but lack instant chat responses or automated FAQ assistants. Set "website_status" to "active" if they have a website, or "no_website" otherwise.`;
-    } else if (pitchOffer === "custom" && customOfferDetails) {
-      targetingInstructions = `
-- SPECIAL SEARCH TARGETING: We are pitching: ${customOfferDetails}.
-  Therefore, find businesses that match the profile and pain points of this service: ${customOfferDetails}. Set "website_status" to "active" if they have a website, or "no_website" otherwise.`;
-    }
-
-    let contactConstraintInstructions = "";
-    if (reqContactConstraint === 'email') {
-      contactConstraintInstructions = "\n- CRITICAL CONTACT CONSTRAINT: You MUST ONLY return businesses that have a valid, public contact email address. If a business does not have a public email address, skip it and search for another one.";
-    } else if (reqContactConstraint === 'phone') {
-      contactConstraintInstructions = "\n- CRITICAL CONTACT CONSTRAINT: You MUST ONLY return businesses that have a valid, public phone number. Skip any business without a phone.";
-    } else if (reqContactConstraint === 'instagram') {
-      contactConstraintInstructions = "\n- CRITICAL SOCIAL CONSTRAINT: You MUST ONLY return businesses that have a public Instagram handle/URL. Skip any business without Instagram.";
-    } else if (reqContactConstraint === 'linkedin') {
-      contactConstraintInstructions = "\n- CRITICAL SOCIAL CONSTRAINT: You MUST ONLY return businesses that have a public LinkedIn company/profile page URL. Skip any business without LinkedIn.";
-    } else if (reqContactConstraint === 'facebook') {
-      contactConstraintInstructions = "\n- CRITICAL SOCIAL CONSTRAINT: You MUST ONLY return businesses that have a public Facebook page URL. Skip any business without Facebook.";
-    } else if (reqContactConstraint === 'whatsapp') {
-      contactConstraintInstructions = "\n- CRITICAL SOCIAL CONSTRAINT: You MUST ONLY return businesses that have a public WhatsApp contact number or click-to-chat link. Skip any business without WhatsApp.";
-    } else if (reqContactConstraint === 'any_social') {
-      contactConstraintInstructions = "\n- CRITICAL SOCIAL CONSTRAINT: You MUST ONLY return businesses that have at least one valid social media page URL (Instagram, LinkedIn, Facebook, or Twitter). Skip any business without any social media profiles.";
-    } else if (reqContactConstraint === 'email_and_social') {
-      contactConstraintInstructions = "\n- CRITICAL CONTACT/SOCIAL CONSTRAINT: You MUST ONLY return businesses that have both a valid public contact email address AND at least one valid social profile URL (Instagram, LinkedIn, Facebook, or Twitter). Skip any business missing either.";
-    } else if (reqContactConstraint === 'all') {
-      contactConstraintInstructions = "\n- CRITICAL CONSTRAINT: You MUST ONLY return businesses that have a public email address AND a phone number AND at least one valid social profile URL (Instagram, LinkedIn, Facebook, or Twitter). Skip any business missing any of these details.";
-    } else if (reqContactConstraint === 'email_or_phone') {
-      contactConstraintInstructions = "\n- CRITICAL CONTACT CONSTRAINT: You MUST ONLY return businesses that have either a public contact email address OR a phone number. Skip any business missing both.";
-    }
-
-    const startTime = Date.now();
-    const batchSize = 15;
-    const processedLeads = [];
-    const savedLeads = [];
-    const seenNames = new Set();
-
-    try {
-      const existingLeads = await pool.query("SELECT name FROM leads WHERE user_id = $1", [req.userId]);
-      for (const row of existingLeads.rows) {
-        seenNames.add(row.name.toLowerCase().trim());
-      }
-      if (seenNames.size > 0) {
-        addLog("info", `[SEARCHER AGENT] Pre-populated blocklist with ${seenNames.size} existing leads.`);
-      }
-    } catch (dbErr) {
-      console.error("Failed to load existing lead names for standard scan seenNames:", dbErr.message);
-    }
-
-    addLog("info", `[SEARCHER AGENT] Initiating scraper scanning loop up to the limit of ${limit} leads...`);
-
-    let attempts = 0;
-    const maxAttempts = Math.max(50, Math.ceil(limit / 2) * 5);
-
-    while (processedLeads.length < limit && attempts < maxAttempts) {
-      const scanStatusCheck = await pool.query("SELECT status FROM scans WHERE id = $1", [scanId]);
-      if (scanStatusCheck.rowCount > 0 && scanStatusCheck.rows[0].status === "stopped") {
-        addLog("info", "[SCAN AGENT] Scanning stopped/cancelled by the user.");
-        break;
-      }
-
-      if (Date.now() - startTime > 2700000) {
-        addLog("info", `[SEARCHER AGENT] Approaching overall request timeout limit (${Math.round((Date.now() - startTime)/1000)}s elapsed). Syncing current leads and concluding early.`);
-        break;
-      }
-      attempts++;
-      const currentBatchLimit = Math.min(batchSize, limit - processedLeads.length);
-      if (currentBatchLimit <= 0) break;
-      addLog("info", `[SEARCHER AGENT] Fetching AI batch (Targeting: ${currentBatchLimit} leads, Progress: ${processedLeads.length}/${limit})...`);
-
-      const promptText = `
-Find exactly ${currentBatchLimit} real, active local businesses matching this target:
-- Niche: ${niche}
-- Location: ${location}
-${seenNames.size > 0 ? `Please avoid duplicates of the following businesses: ${Array.from(seenNames).slice(0, 500).join(", ")}` : ""}
-${targetingInstructions}
-${contactConstraintInstructions}
-
-Instructions:
-- Use Google Search grounding to find these businesses. Perform 2-3 searches to locate the businesses and retrieve their details.
-- MULTI-SOURCE & SOCIAL DISCOVERY: Do not restrict yourself to Google Maps. Query broad search results to locate candidate businesses from multiple directories (such as Yelp) and social media platforms (Facebook, Instagram, LinkedIn, Twitter/X). If a business has no active website, check if they have a Facebook Page, Instagram bio, or Yelp listing where they do business. We want to find leads regardless of which platform they are on.
-- OWNER & DECISION-MAKER EXTRACT: For each business, check the search grounding details, Yelp, and social profiles to identify the name of the owner, founder, CEO, general manager, or key decision-maker. Extract their specific job title/role and any direct contact info (direct email, business/personal phone, or personal LinkedIn URL). Do not use generic business contacts if direct owner info is available.
-- SOCIAL PRESENCE CHECK: Analyze their digital presence on social media platforms. Check the frequency/recency of their posts or customer review activity (e.g. did they post recently on Instagram/Facebook? Are they receiving reviews on Yelp?). AI must use this information to determine if they are active but lack automations or have an outdated web presence.
-- CRITICAL LOCATION CONSTRAINT: You MUST ONLY return businesses located in the specified city/state: ${location}. Under no circumstances should you return businesses in any other city, state, or country. Verify the city/state of each business using Google Search before returning it.
-- WEBSITE STATUS TRUTH CONSTRAINT: Do not invent or hallucinate that a business lacks a website if it has one. If a business has an active website, set its website URL correctly and set website_status to "active". Do not discard it. We want to pitch redesigns and improvements for active websites.
-- DATA QUALITY CONSTRAINTS: You MUST extract the real, authentic phone number from the Google Search grounding/maps profiles or social pages. Never use placeholders like "(512) XXX-XXXX" or "(XXX) XXX-XXXX". For average rating and total reviews: retrieve actual values if found, but if they are missing or if you are using fallback knowledge, estimate realistic values based on their popularity/size (e.g., rating between 4.1 and 4.8, and reviews between 50 and 800) so that no business has a null, 0, or missing value.
-- EMAIL FINDING & DATA ACCURACY STRATEGY:
-  - Deeply search the grounding context and search results (official website pages, Facebook pages, contact details pages, Yelp listings, or Instagram bios) to extract real, public contact email addresses.
-  - DO NOT return dummy/placeholder emails like name@example.com or info@domain.com unless it's a real email.
-  - If a public email is not found, output null. Never invent fake ones.
-  - Double check phone formats, rating (e.g. 4.9), and review counts to ensure they match authentic real-world business directory data.
-
-For each business, retrieve:
-  1. Exact Business Name
-  2. Specific Category/Type
-  3. Official Website URL
-  4. Real, public contact email address if publicly listed (otherwise null).
-  5. Phone number
-  6. Average rating and total reviews (if not found, output null)
-  7. Official Instagram handle (otherwise null)
-  8. Official LinkedIn profile URL (otherwise null)
-  9. Official Facebook profile URL (otherwise null)
-  10. Official WhatsApp contact number or link (otherwise null)
-  11. Official Twitter/X profile URL (otherwise null)
-  12. Business owner or decision-maker name (otherwise null)
-  13. Business owner/decision-maker professional title/role (otherwise null)
-  14. Business owner/decision-maker direct contact (email, phone, or LinkedIn URL - otherwise null)
-
-You must return the response as a valid JSON array of objects, where each object has these exact keys:
-"name" (string), "type" (string), "city" (string, e.g. "Austin, TX"), "email" (string or null), "phone" (string), "rating" (number or null), "reviews" (integer or null), "instagram" (string or null), "linkedin" (string or null), "facebook" (string or null), "whatsapp" (string or null), "twitter" (string or null), "website" (string or null), "website_status" (string, e.g. "active", "no_website", "down"), "owner_name" (string or null), "owner_role" (string or null), "owner_contact" (string or null)
-
-CRITICAL: If no matching businesses can be found in the location that satisfy the niching and website/service constraints, you MUST return a valid empty JSON array [] as your entire response. Do not output any conversational explanations, chat text, intros, or outros.
-
-Format example:
-[
-  {
-    "name": "Houndstooth Coffee",
-    "type": "Specialty Coffee",
-    "city": "Austin, TX",
-    "email": "jake@theshoredesigns.com",
-    "phone": "(512) 531-9020",
-    "rating": 4.0,
-    "reviews": 604,
-    "instagram": "@houndstoothcoffee",
-    "linkedin": "https://www.linkedin.com/company/houndstooth-coffee",
-    "facebook": "https://www.facebook.com/houndstoothcoffee",
-    "whatsapp": null,
-    "twitter": null,
-    "website": "https://www.houndstoothcoffee.com",
-    "website_status": "active",
-    "owner_name": "Sean Henry",
-    "owner_role": "Founder & Owner",
-    "owner_contact": "https://www.linkedin.com/in/sean-henry"
-  }
-]
-`;
-
-      let response;
-      try {
-        response = await fetchGeminiWithRetry(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: promptText }] }],
-              tools: [{ googleSearch: {} }],
-              generationConfig: {}
-            }),
-            signal: AbortSignal.timeout(900000)
-          },
-          (logType, logText) => addLog(logType, logText),
-          2
-        );
-      } catch (fetchErr) {
-        await handleGeminiError(req.userId, fetchErr, "Manual Leads Scan");
-        throw new Error(`Gemini API Error: ${fetchErr.message}`);
-      }
-
-      const data = await response.json();
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "[]";
+      const settingsRes = await pool.query("SELECT * FROM campaign_settings WHERE user_id = $1 LIMIT 1", [req.userId]);
+      const config = settingsRes.rows[0] ? decryptConfig(settingsRes.rows[0]) : {};
       
-      let batchLeads = [];
-      try {
-        batchLeads = extractJsonArray(text);
-      } catch (parseErr) {
-        addLog("warn", `[SEARCHER AGENT] Failed to parse JSON response from Gemini batch: ${parseErr.message}`);
-        console.warn(`[PARSING ERROR DETAILS] Raw response text:`, text);
-        continue;
-      }
+      const userRes = await pool.query("SELECT subscription_tier FROM users WHERE id = $1", [req.userId]);
+      const userTier = (userRes.rows[0]?.subscription_tier || "agency").toLowerCase();
+      let maxLimit = 50;
+      if (userTier === "free") maxLimit = 5;
+      else if (userTier === "growth") maxLimit = 25;
 
-      if (batchLeads.length === 0) {
-        addLog("info", "[SEARCHER AGENT] No more leads returned in this batch. Stopping search loop.");
-        break;
-      }
+      const resolvedLimit = Math.min(maxLimit, parseInt(reqLimit || config.daily_lead_limit || 5, 10));
+      const resolvedNiche = niche || config.niche || "Cafes";
+      const resolvedLocation = location || config.location || "Austin, TX";
 
-      const batchLeadsToQualify = [];
-      const concurrencyLimit = 3;
-      for (let i = 0; i < batchLeads.length; i += concurrencyLimit) {
-        const chunk = batchLeads.slice(i, i + concurrencyLimit);
-        const chunkPromises = chunk.map(async (lead) => {
-          if (!lead.name) return null;
-          const normalizedName = lead.name.toLowerCase().trim();
-          if (seenNames.has(normalizedName)) return null;
+      addLog(`[PIPELINE] Resolved parameters - Niche: "${resolvedNiche}", Location: "${resolvedLocation}", Limit: ${resolvedLimit}`);
+      
+      const processedLeads = await runScraperPipeline({
+        userId: req.userId,
+        niche: resolvedNiche,
+        location: resolvedLocation,
+        limit: resolvedLimit,
+        scanId,
+        addLog
+      });
 
-          let email = lead.email;
-          if (email) {
-            if (isValidEmail(email)) {
-              // keep it
-            } else {
-              email = null;
-            }
-          }
-
-          let phone = lead.phone || null;
-          if (phone && (phone.includes("XXX") || phone.includes("xxx") || phone.includes("000-0000"))) {
-            phone = null;
-          }
-
-          let website = lead.website || null;
-          let websiteStatus = lead.website_status || 'unknown';
-          let hasBooking = false;
-
-          if (website && website !== "null" && website !== "none" && website !== "") {
-            if (!/^https?:\/\//i.test(website)) {
-              website = `http://${website}`;
-            }
-            addLog("info", `[SEARCHER AGENT] Verifying website status and crawling: ${website}...`);
-            let crawlRes = { websiteStatus: 'active', hasBooking: false, emails: [], phones: [], socials: {} };
-            try {
-              crawlRes = await crawlWebsiteForEmail(website, (type, t) => {
-                if (type === "warn") addLog("warn", `[SEARCHER AGENT] ${t}`);
-                else if (type === "info") addLog("info", `[SEARCHER AGENT] ${t}`);
-              });
-              websiteStatus = crawlRes.websiteStatus || 'active';
-              hasBooking = crawlRes.hasBooking || false;
-            } catch (crawlErr) {
-              addLog("warn", `[SEARCHER AGENT] Website crawl failed for ${website}: ${crawlErr.message}`);
-              websiteStatus = 'active'; // fallback
-            }
-            if (!email && crawlRes.emails && crawlRes.emails.length > 0) {
-              email = crawlRes.emails[0];
-            }
-            if (!phone && crawlRes.phones && crawlRes.phones.length > 0) {
-              phone = crawlRes.phones[0];
-            }
-            if (crawlRes.socials && crawlRes.socials.instagram && (!lead.instagram || lead.instagram === "@none" || lead.instagram === "")) {
-              lead.instagram = crawlRes.socials.instagram;
-            }
-          } else {
-            websiteStatus = 'no_website';
-          }
-
-          const updatedLead = {
-            ...lead,
-            email,
-            phone,
-            website,
-            website_status: websiteStatus,
-            hasBooking,
-            owner_name: lead.owner_name || null,
-            owner_role: lead.owner_role || null,
-            owner_contact: lead.owner_contact || null
-          };
-
-          return updatedLead;
-        });
-
-        const chunkResults = await Promise.all(chunkPromises);
-        batchLeadsToQualify.push(...chunkResults.filter(Boolean));
-      }
-
-      // Perform strict post-Gemini Javascript filter validation
-      const qualifiedBatch = [];
-      for (const lead of batchLeadsToQualify) {
-        const qualResult = getLeadQualification(lead, pitchOffer, lead.hasBooking, reqContactConstraint, strictFilter !== false);
-        if (!qualResult.isMatch) {
-          addLog("warn", `[CONTENT AGENT] Skipping "${lead.name}" - does not satisfy contact details requirements (${qualResult.reason}).`);
-          continue;
-        }
-        qualifiedBatch.push(lead);
-      }
-
-      if (qualifiedBatch.length === 0) {
-        continue;
-      }
-
-      let qualResults = [];
-      if (strictFilter === false) {
-        qualResults = qualifiedBatch.map(l => ({ name: l.name, isMatch: true }));
+      const scanStatusRes = await pool.query("SELECT status FROM scans WHERE id = $1", [scanId]);
+      if (scanStatusRes.rowCount > 0 && scanStatusRes.rows[0].status === "stopped") {
+        addLog(`[PIPELINE] Lead Finder process stopped by user. ${processedLeads.length} leads processed.`);
       } else {
-        qualResults = await qualifyLeadsWithAI(qualifiedBatch, pitchOffer, customOfferDetails, apiKey);
-      }
-
-      for (const lead of qualifiedBatch) {
-        const qual = qualResults.find(q => q.name.toLowerCase().trim() === lead.name.toLowerCase().trim()) || { isMatch: true, reason: "" };
-        if (!qual.isMatch) {
-          addLog("warn", `[CONTENT AGENT] Skipping "${lead.name}" - ${qual.reason || "does not match targeting criteria"}.`);
-          continue;
-        }
-
-        const normalizedName = lead.name.toLowerCase().trim();
-        seenNames.add(normalizedName);
-
-        if (lead.email) {
-          addLog("success", `[CONTENT AGENT] Email verified for "${lead.name}": ${lead.email}`);
-        } else {
-          addLog("warn", `[CONTENT AGENT] No email found for "${lead.name}"`);
-        }
-
-        let rating = lead.rating ? parseFloat(lead.rating) : null;
-        let reviews = lead.reviews ? parseInt(lead.reviews) : null;
-        if (!rating || rating === 0) {
-          rating = parseFloat((4.2 + Math.random() * 0.6).toFixed(1));
-        }
-        if (!reviews || reviews === 0) {
-          reviews = Math.floor(50 + Math.random() * 300);
-        }
-
-        const score = qual.score !== undefined ? parseInt(qual.score, 10) : Math.floor(70 + Math.random() * 25);
-        const finalLeadObj = {
-          ...lead,
-          rating,
-          reviews,
-          status: lead.email ? "not contacted" : "no_email",
-          qualification_reason: qual.reason || "Qualified by AI Scorer",
-          qualification_score: score
-        };
-        processedLeads.push(finalLeadObj);
-
-        // Sync to DB immediately!
-        try {
-          const checkDup = await pool.query(
-            "SELECT id, status FROM leads WHERE name = $1 AND city = $2 AND user_id = $3",
-            [finalLeadObj.name, finalLeadObj.city || location, req.userId]
-          );
-          if (checkDup.rowCount === 0) {
-            let emailTrashed = false;
-            if (finalLeadObj.email) {
-              const checkEmailTrashed = await pool.query(
-                "SELECT id FROM leads WHERE email = $1 AND status = 'trashed' AND user_id = $2",
-                [finalLeadObj.email, req.userId]
-              );
-              if (checkEmailTrashed.rowCount > 0) {
-                emailTrashed = true;
-              }
-            }
-
-            if (!emailTrashed) {
-              const insertRes = await pool.query(
-                "INSERT INTO leads (name, type, city, email, phone, rating, reviews, status, instagram, user_id, website, website_status, linkedin, facebook, whatsapp, twitter, owner_name, owner_role, owner_contact, qualification_reason, qualification_score) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21) RETURNING *",
-                [finalLeadObj.name, finalLeadObj.type, finalLeadObj.city || location, finalLeadObj.email, finalLeadObj.phone, finalLeadObj.rating, finalLeadObj.reviews, finalLeadObj.status, finalLeadObj.instagram, req.userId, finalLeadObj.website || null, finalLeadObj.website_status || 'unknown', finalLeadObj.linkedin || null, finalLeadObj.facebook || null, finalLeadObj.whatsapp || null, finalLeadObj.twitter || null, finalLeadObj.owner_name || null, finalLeadObj.owner_role || null, finalLeadObj.owner_contact || null, finalLeadObj.qualification_reason || null, finalLeadObj.qualification_score || null]
-              );
-              savedLeads.push(insertRes.rows[0]);
-              addLog("info", `[LEAD MANAGER AGENT] Saved new lead: "${finalLeadObj.name}" (Score: ${score}%)`);
-            } else {
-              addLog("warn", `[LEAD MANAGER AGENT] Skipping "${finalLeadObj.name}" because its email address was previously TRASHED.`);
-            }
-          } else if (checkDup.rows[0].status !== "trashed") {
-            const updateRes = await pool.query(
-              "UPDATE leads SET email = COALESCE($1, email), phone = COALESCE($2, phone), rating = $3, reviews = $4, instagram = COALESCE($5, instagram), website = COALESCE($6, website), website_status = COALESCE($7, website_status), linkedin = COALESCE($8, linkedin), facebook = COALESCE($9, facebook), whatsapp = COALESCE($10, whatsapp), twitter = COALESCE($11, twitter), owner_name = COALESCE($12, owner_name), owner_role = COALESCE($13, owner_role), owner_contact = COALESCE($14, owner_contact), qualification_reason = COALESCE($15, qualification_reason), qualification_score = COALESCE($16, qualification_score) WHERE id = $17 AND user_id = $18 RETURNING *",
-              [finalLeadObj.email, finalLeadObj.phone, finalLeadObj.rating, finalLeadObj.reviews, finalLeadObj.instagram, finalLeadObj.website || null, finalLeadObj.website_status || 'unknown', finalLeadObj.linkedin || null, finalLeadObj.facebook || null, finalLeadObj.whatsapp || null, finalLeadObj.twitter || null, finalLeadObj.owner_name || null, finalLeadObj.owner_role || null, finalLeadObj.owner_contact || null, finalLeadObj.qualification_reason || null, finalLeadObj.qualification_score || null, checkDup.rows[0].id, req.userId]
-            );
-            savedLeads.push(updateRes.rows[0]);
-            addLog("info", `[LEAD MANAGER AGENT] Updated existing lead: "${finalLeadObj.name}" (Score: ${score}%)`);
-          } else {
-            addLog("warn", `[LEAD MANAGER AGENT] Skipping "${finalLeadObj.name}" because it is currently TRASHED.`);
-          }
-        } catch (dbErr) {
-          console.error(`Failed to save lead "${finalLeadObj.name}" to database:`, dbErr.message);
-          addLog("error", `[LEAD MANAGER AGENT] Error saving "${finalLeadObj.name}": ${dbErr.message}`);
-        }
-      }
-    }
-
-    const scanStatusRes = await pool.query("SELECT status FROM scans WHERE id = $1", [scanId]);
-    if (scanStatusRes.rowCount > 0 && scanStatusRes.rows[0].status === "stopped") {
-      addLog("accent", `[LEAD MANAGER AGENT] Lead Finder process stopped by user. ${savedLeads.length} leads loaded successfully.`);
-    } else {
-      addLog("accent", `[LEAD MANAGER AGENT] Lead Finder process finished. ${savedLeads.length} leads loaded successfully.`);
-      await pool.query(
-        "UPDATE scans SET status = 'completed', progress = 100 WHERE id = $1",
-        [scanId]
-      );
-      try {
+        addLog(`[PIPELINE] Lead Finder process completed. ${processedLeads.length} leads processed successfully.`);
         await pool.query(
-          `INSERT INTO notifications (user_id, title, message, type, link)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [req.userId, `🔍 Scan Completed`, `Found and qualified ${savedLeads.length} leads for '${niche}' in ${location}.`, 'system', 'Leads']
+          "UPDATE scans SET status = 'completed', progress = 100 WHERE id = $1",
+          [scanId]
         );
-      } catch (notifErr) {
-        console.error("Failed to insert scan notification:", notifErr.message);
+        
+        try {
+          await pool.query(
+            `INSERT INTO notifications (user_id, title, message, type, link)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [req.userId, `🔍 Scan Completed`, `Found and qualified ${processedLeads.length} leads for '${resolvedNiche}' in ${resolvedLocation}.`, 'system', 'Leads']
+          );
+        } catch (notifErr) {
+          console.error("Failed to insert scan notification:", notifErr.message);
+        }
       }
-    }
 
-  } catch (err) {
-    addLog("danger", `[LEAD MANAGER AGENT] Lead scanning failed: ${err.message}`);
-    await pool.query(
-      "UPDATE scans SET status = 'failed', error = $1 WHERE id = $2",
-      [err.message, scanId]
-    );
-  }
+    } catch (err) {
+      addLog(`[PIPELINE] [ERROR] Lead scanning failed: ${err.message}`);
+      await pool.query(
+        "UPDATE scans SET status = 'failed', error = $1 WHERE id = $2",
+        [err.message, scanId]
+      );
+    }
   });
 });
 
@@ -6228,24 +5916,24 @@ async function generateDeveloperOutreach(lead, config) {
   // Pick fallback template index based on a simple hash of the lead's name to ensure diversity
   const templateIndex = Math.abs(lead.name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)) % 5;
 
-  let subject = `quick question for ${lead.name}`;
-  let body = `Hi,\n\nI was looking at ${lead.name} in ${lead.city} and wanted to reach out. I'm ${senderIntro}.\n\nI ${offerDescription}. I noticed you guys have an awesome ${lead.rating}⭐ rating with ${lead.reviews} reviews, and thought this would work great for your business.\n\nI built a quick preview for ${lead.name} - would you be open to a quick 10-minute check this week?\n\nCheers,\n${signature}`;
+  let subject = `quick question about ${lead.name}'s booking`;
+  let body = `Hi,\n\nNoticed ${lead.name} has a great reputation in ${lead.city} but bookings still go through a phone call — no online scheduling on the site.\n\nI build custom AI booking tools that let clients book directly (even after hours) without adding to your front desk's workload. Took me about 10 minutes to sketch how it'd work for your site.\n\nWorth a 2-minute look?\n\n— ${senderName}${portfolioUrl ? `\n\nPortfolio: ${portfolioUrl}` : ""}`;
 
   if (templateIndex === 0) {
-    subject = `Quick idea about ${lead.name}`;
-    body = `Hi,\n\nI came across ${lead.name} and noticed a few opportunities where your website or reservation experience could be improved.\n\nMany local businesses lose customers because of slow response times, manual processes, or outdated layouts. I help owners fix exactly those problems by building scalable web applications and automated reservation systems.\n\nWould you be open to a quick conversation to see if there are any easy wins for ${lead.name}?\n\nBest,\n${signature}`;
+    subject = `Quick idea for ${lead.name}`;
+    body = `Hi,\n\nI was looking at ${lead.name}'s website and noticed a couple of opportunities to capture more appointments from your search traffic.\n\nI build custom web apps, SaaS dashboards, and chat widgets. You can see some of my work here: ${portfolioUrl || "noryvex.com"}\n\nWould you be open to a 10-second sketch of what a modern booking widget looks like on your site?\n\nBest,\n${senderName}`;
   } else if (templateIndex === 1) {
-    subject = `One thing I noticed on ${lead.name}`;
-    body = `Hi,\n\nI spent a few minutes looking through ${lead.name} and one thing immediately stood out. With your great ${lead.rating}⭐ rating on Google, a lot of new customers must be finding you online every day.\n\nI build custom web applications, SaaS platforms, and AI booking tools that help popular businesses convert that search traffic into bookings and sales automatically.\n\nHappy to share a few ideas if you're interested.\n\nThanks,\n${signature}`;
+    subject = `${lead.name} scheduling`;
+    body = `Hi,\n\nQuick question — does your team manually schedule all reservations over the phone, or are you looking to automate booking this quarter?\n\nI ask because I help startups and local clinics/cafes implement custom automated schedulers that sync with their calendar automatically.\n\nShould I send over a quick 2-minute preview of how it would work for ${lead.name}?\n\nBest regards,\n${senderName}`;
   } else if (templateIndex === 2) {
-    subject = `Curious question`;
-    body = `Hi,\n\nQuick question — are you currently planning to build any new digital features/bookings this quarter, or are you mostly focused on your current setup?\n\nI ask because I help startups and local businesses like ${lead.name} implement custom reservation systems, websites, and chat automations without the cost of a full-time engineering team.\n\nWould love to learn what you're working on.\n\nRegards,\n${signature}`;
+    subject = `question about ${lead.name}'s website`;
+    body = `Hi,\n\nNoticed the mobile version of ${lead.name}'s website has a few issues with reservation button alignments, which might be losing you bookings.\n\nI'm a developer and I build high-performance custom web applications and reservation tools. Here's my portfolio: ${portfolioUrl || "noryvex.com"}\n\nShould I send over a quick 30-second video of the layout tweaks I'd suggest?\n\nThanks,\n${senderName}`;
   } else if (templateIndex === 3) {
-    subject = `Saving time at ${lead.name}`;
-    body = `Hi,\n\nOne of the biggest challenges I see with popular businesses like ${lead.name} is getting reservation inquiries and website updates handled quickly without slowing down your day-to-day operations.\n\nI help founders and owners save hours by building scalable web platforms and automated messaging setups.\n\nIf you ever need an experienced development partner, I'd be happy to chat.\n\nBest,\n${signature}`;
+    subject = `quick question for ${lead.name}`;
+    body = `Hi,\n\nIf adding new digital reservation features or automating patient/client booking is on your roadmap for ${lead.name} this year, I'd love to connect.\n\nI help owners build custom reservation bots and customer portals from idea to launch.\n\nWorth a 2-minute introductory chat this week?\n\nCheers,\n${senderName}`;
   } else if (templateIndex === 4) {
-    subject = `If web/booking updates are on your roadmap...`;
-    body = `Hi,\n\nIf expanding your digital presence or adding new features/booking systems is on your roadmap this year, I'd love to introduce myself.\n\nI help businesses like ${lead.name} build custom websites, dashboards, and automated reservation bots from idea to launch.\n\nIf that's something you anticipate needing, I'd be happy to discuss how I could help.\n\nBest regards,\n${signature}`;
+    subject = `one thing I noticed on ${lead.name}`;
+    body = `Hi,\n\nI was looking at ${lead.name} and noticed bookings still go through a phone call — no online scheduling option on the site.\n\nI build custom AI booking tools that let patients/clients book directly (even after hours) without adding to your workload.\n\nWorth a 2-minute look?\n\n— ${senderName}${portfolioUrl ? `\n\nPortfolio: ${portfolioUrl}` : ""}`;
   }
 
   const geminiKey = config.gemini_key || process.env.GEMINI_API_KEY;
@@ -6342,17 +6030,14 @@ async function generateDeveloperOutreach(lead, config) {
         - Website: ${lead.website || "None"}
         - Website Status: ${lead.website_status || "unknown"} (can be "active", "no_website", or "down")
         - Existing Personalized Icebreaker: ${lead.personalized_icebreaker || "None"}
-
-        User-Selected Campaign Configuration:
-        - Selected Target Niche: ${config.niche || lead.type || "unknown"}
-        - Selected Target Location: ${config.location || lead.city || "unknown"}
-        - Selected Offer ID: ${pitchOffer}
-        - Custom Offer Details: ${customOfferDetails || "None"}
-
-        Outreach Guidelines:
+        Outreach Guidelines:
         - Target Audience: Local business owner
         - Tone: Professional, human, friendly, helpful, conversational. Never salesy, robotic, or desperate.
         - Core Pitch Offer: ${offerGuidelines}
+        - Proof & Links: If a portfolio URL (${portfolioUrl || ""}) is available, weave it naturally into the pitch as proof of your work.
+        - Deep Personalization: Do NOT use lazy templates like praising their Google rating or review count. Instead, make a specific observation about their situation (e.g., "Noticed bookings still go through a phone call — no online scheduling on the site" or "Your website mobile buttons overlap").
+        - Low-Friction yes/no CTA: The CTA MUST be a specific, low-friction yes/no question (e.g., "Worth a 2-minute look?", "Should I send over a 10-second sketch of this?"). BANNED: Soft or open invitations like "Let me know if you want to chat" or "Happy to share ideas".
+        - Click-Worthy Subject Line: Keep it short, lowercase, and highly specific/curious (e.g., "quick question about [Business]'s booking" or "quick idea for [Business]'s website").
 
         BANNED PHRASES: Do NOT use phrases like "Hope you're doing well", "I came across your website", "Just checking in", "Wanted to reach out", "We are the best", "Industry-leading", "Revolutionary", "Game changer", "Guaranteed", "World class".
 
@@ -6376,11 +6061,11 @@ async function generateDeveloperOutreach(lead, config) {
 
         Return a single JSON object with these EXACT keys:
         - "thinking": A brief paragraph detailing your step-by-step research answers (What they do, their customers, opportunities, matched service reason).
-        - "subject": Short click-worthy personalized subject line (no generic or spam words).
+        - "subject": Short click-worthy personalized subject line (no generic or spam words, lowercase).
         - "opening": Personalized opening sentence hook referring to their business directly.
         - "personalizedBody": Opportunity-focused paragraph explaining what can be improved.
-        - "valueProposition": The business benefit/outcome of the matched service for them.
-        - "cta": Low-pressure CTA (asking simple permission to show/send a quick concept preview).
+        - "valueProposition": The business benefit/outcome of the matched service for them, including portfolio URL if available.
+        - "cta": Low-pressure yes/no CTA (asking simple permission to send a quick concept preview).
         - "closing": Cheers, ${senderName}${(useCompany && companyName) ? `\n${senderRole}\n${companyName}` : `\n${senderRole}`}
         - "followUp1": "Subject: [follow up subject]\\n\\n[A short, friendly follow-up email text sent 3 days later, referencing the previous idea and offering simple value or permission to share a mockup]"
         - "followUp2": "Subject: [follow up subject]\\n\\n[A short, conversational second follow-up text sent 7 days later, simple and low pressure]"
@@ -6388,8 +6073,7 @@ async function generateDeveloperOutreach(lead, config) {
         - "linkedinFollowUp": "A short, conversational follow-up message to send once they accept the LinkedIn connection"
         - "shortVersion": "Subject: [short subject]\\n\\n[An ultra-concise email version under 60 words body]"
         - "longVersion": "Subject: [long subject]\\n\\n[A deconstructive, high-impact version under 150 words body]"
-
-        Do NOT wrap the JSON inside markdown code blocks (e.g., do not start with \`\`\`json). Return a raw JSON string.
+        Return a raw JSON string.
       `;
       
       const response = await fetchGeminiWithRetry(
