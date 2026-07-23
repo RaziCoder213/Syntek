@@ -775,7 +775,23 @@ async function setupDatabase() {
       }
     }
 
+
+    // ── Follow-Up System Migrations ──
+    await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS followup_count INTEGER DEFAULT 0;`);
+    await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS last_followup_at TIMESTAMP DEFAULT NULL;`);
+    await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS next_followup_at TIMESTAMP DEFAULT NULL;`);
+    await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS followup_strategy JSONB DEFAULT NULL;`);
+    await pool.query(`ALTER TABLE emails ADD COLUMN IF NOT EXISTS followup_number INTEGER DEFAULT 0;`);
+    await pool.query(`ALTER TABLE emails ADD COLUMN IF NOT EXISTS email_uid VARCHAR(150) DEFAULT NULL;`);
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_emails_user_uid ON emails(user_id, email_uid)
+      WHERE email_uid IS NOT NULL;
+    `);
+    // Index for fast follow-up queue lookups
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_leads_followup_queue ON leads(user_id, next_followup_at, status, followup_count);`);
+
     console.log("PostgreSQL schema validated and multi-tenant migrations applied successfully.");
+
   } catch (err) {
     console.error("Failed to run database migrations:", err.message);
   }
@@ -3040,15 +3056,37 @@ app.post("/api/admin/users/:id/toggle-admin", authenticate, async (req, res) => 
 // Smart Inbox Routes
 app.get("/api/emails", authenticate, async (req, res) => {
   try {
+    const { tab = "all", page = 1, limit = 100 } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    // Tab-aware WHERE clause — uses labels array to correctly categorise emails
+    let tabFilter = "";
+    if (tab === "inbox") {
+      tabFilter = `AND e.labels @> ARRAY['inbox']::text[] AND (e.category IS NULL OR e.category != 'draft')`;
+    } else if (tab === "pending") {
+      tabFilter = `AND (e.labels && ARRAY['pending_reply','draft']::text[] OR e.category = 'draft')`;
+    } else if (tab === "sent") {
+      tabFilter = `AND e.labels @> ARRAY['sent']::text[]`;
+    }
+
     const result = await pool.query(
-      `SELECT e.*, COALESCE(l.is_opened, FALSE) AS lead_is_opened
+      `SELECT e.*, COALESCE(l.is_opened, FALSE) AS lead_is_opened,
+              l.contacted_at, l.followup_count, l.next_followup_at, l.qualification_score
        FROM emails e
        LEFT JOIN leads l ON LOWER(e.from_email) = LOWER(l.email) AND e.user_id = l.user_id
-       WHERE e.user_id = $1
-       ORDER BY e.time_received DESC, e.id DESC`,
+       WHERE e.user_id = $1 ${tabFilter}
+       ORDER BY e.time_received DESC, e.id DESC
+       LIMIT $2 OFFSET $3`,
+      [req.userId, parseInt(limit), offset]
+    );
+
+    const countRes = await pool.query(
+      `SELECT COUNT(*)::integer AS total FROM emails e WHERE e.user_id = $1 ${tabFilter}`,
       [req.userId]
     );
-    res.json(result.rows);
+    const total = countRes.rows[0]?.total || 0;
+
+    res.json({ emails: result.rows, total, page: parseInt(page), hasMore: offset + result.rows.length < total });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -3072,12 +3110,24 @@ app.post("/api/emails/sync", authenticate, async (req, res) => {
 });
 
 app.delete("/api/emails", authenticate, async (req, res) => {
+  const { tab = "inbox" } = req.query;
   try {
-    await pool.query(
-      "DELETE FROM emails WHERE user_id = $1 AND NOT ('sent' = ANY(labels)) AND category != 'sent'",
+    let deleteWhere = "";
+    if (tab === "inbox") {
+      deleteWhere = `AND labels @> ARRAY['inbox']::text[] AND (category IS NULL OR category != 'draft')`;
+    } else if (tab === "pending") {
+      deleteWhere = `AND (labels && ARRAY['pending_reply','draft']::text[] OR category = 'draft')`;
+    } else if (tab === "sent") {
+      deleteWhere = `AND labels @> ARRAY['sent']::text[]`;
+    } else {
+      // Fallback: old behaviour (clear all non-sent)
+      deleteWhere = `AND NOT ('sent' = ANY(labels)) AND (category IS NULL OR category != 'sent')`;
+    }
+    const result = await pool.query(
+      `DELETE FROM emails WHERE user_id = $1 ${deleteWhere}`,
       [req.userId]
     );
-    res.json({ success: true, message: "Inbox cleared successfully (sent emails preserved)." });
+    res.json({ success: true, deleted: result.rowCount, tab });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -3311,14 +3361,32 @@ app.post("/api/emails/:id/generate-reply", authenticate, async (req, res) => {
     const replyText = await generateEmailReplyText(email, config, req.userId);
     
     if (email.category === 'draft' || (email.labels && email.labels.includes('pending_reply'))) {
-      // Save/update the regenerated reply preview text in database
+      // Regenerate: update existing draft preview in place
       await pool.query(
         "UPDATE emails SET preview = $1 WHERE id = $2 AND user_id = $3",
         [replyText, id, req.userId]
       );
       res.json({ replyText });
     } else {
-      // This is a manual draft generation for an incoming email in the inbox!
+      // Manual draft generation for an incoming inbox email
+      // ── Guard: prevent duplicate draft if one already exists for this from_email ──
+      const existingDraft = await pool.query(
+        `SELECT id FROM emails WHERE user_id = $1 AND from_email = $2
+         AND (labels && ARRAY['pending_reply','draft']::text[] OR category = 'draft')
+         AND time_received > NOW() - INTERVAL '24 hours'
+         ORDER BY id DESC LIMIT 1`,
+        [req.userId, email.from_email]
+      );
+      if (existingDraft.rowCount > 0) {
+        // Update existing draft instead of creating another
+        await pool.query(
+          "UPDATE emails SET preview = $1, time_received = NOW() WHERE id = $2 AND user_id = $3",
+          [replyText, existingDraft.rows[0].id, req.userId]
+        );
+        const updatedDraft = await pool.query("SELECT * FROM emails WHERE id = $1", [existingDraft.rows[0].id]);
+        return res.json({ replyText, newDraft: updatedDraft.rows[0], updated: true });
+      }
+
       const draftSubject = email.subject.toLowerCase().startsWith("re:") ? email.subject : `Re: ${email.subject}`;
       const draftLabels = ['draft', 'pending_reply'];
       const insertRes = await pool.query(
@@ -6714,7 +6782,141 @@ async function triggerCronCampaign(config) {
     }
   }
 
+  // 1.5 Process AI Follow-Up Queue (open/unopened behavior-based)
+  if (autopilot_mode !== 'fetch_only') {
+    try {
+      console.log(`[FOLLOWUP AGENT] [CRON] User ${user_id}: Checking follow-up queue...`);
+      const followupDue = await pool.query(
+        `SELECT * FROM leads
+         WHERE user_id = $1
+           AND email IS NOT NULL AND email != ''
+           AND status NOT IN ('replied', 'archived', 'won', 'trashed', 'not contacted', 'new', 'no_email')
+           AND followup_count < 4
+           AND next_followup_at IS NOT NULL
+           AND next_followup_at <= NOW()
+         ORDER BY qualification_score DESC NULLS LAST
+         LIMIT 5`,
+        [user_id]
+      );
+
+      if (followupDue.rowCount > 0) {
+        console.log(`[FOLLOWUP AGENT] [CRON] User ${user_id}: Found ${followupDue.rowCount} leads due for AI follow-up.`);
+        for (const lead of followupDue.rows) {
+          try {
+            // Use internal HTTP call to /api/leads/:id/send-followup via direct logic
+            // (avoid circular HTTP — call the DB/email logic inline)
+            const config2 = config; // already decrypted
+            const geminiKey2 = config2.gemini_key || process.env.GEMINI_API_KEY || "local_antigravity";
+            const senderName2 = config2.sender_name || "Developer";
+            const senderRole2 = config2.sender_role || "Freelancer";
+            const companyName2 = config2.company_name || "";
+            const signature2 = (config2.use_company_branding && companyName2)
+              ? `${senderName2}\n${senderRole2}\n${companyName2}`
+              : `${senderName2}\n${senderRole2}`;
+
+            const followupNumber = (lead.followup_count || 0) + 1;
+            const strategy = lead.followup_strategy || {};
+            const stepStrategy = (strategy.steps && strategy.steps[followupNumber - 1]) || strategy;
+            const subjectHook = stepStrategy.subjectHook || `Quick follow-up — ${lead.name}`;
+            const angle = stepStrategy.angle || strategy.angle || "Re-offer value";
+            const tone = stepStrategy.tone || strategy.tone || "friendly";
+
+            const now2 = new Date();
+            const openedAt2 = lead.opened_at ? new Date(lead.opened_at) : null;
+            const openSignal2 = lead.is_opened && openedAt2
+              ? `They opened our email ${Math.floor((now2 - openedAt2) / 3600000)}h ago but didn't reply.`
+              : `They have NOT opened our email yet.`;
+
+            const promptText2 = `You are ${senderName2}, a ${senderRole2}${companyName2 ? ` at ${companyName2}` : ""}.
+Write follow-up #${followupNumber} to ${lead.name} (${lead.type || "business"} in ${lead.city || "their city"}).
+Open signal: ${openSignal2}
+Strategy: ${angle} | Tone: ${tone}
+MAX 80 words. Subject on line 1 as "Subject: ${subjectHook}". Output ONLY email.
+Signature: Cheers,\n${signature2}`;
+
+            const response2 = await fetchGeminiWithRetry(
+              `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey2}`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ contents: [{ parts: [{ text: promptText2 }] }], generationConfig: {} }),
+                signal: AbortSignal.timeout(20000)
+              },
+              (type, text) => console.log(`[FOLLOWUP AGENT] [CRON] [${type.toUpperCase()}] ${text}`),
+              0
+            );
+            const aiData2 = await response2.json();
+            const generated2 = (aiData2.candidates?.[0]?.content?.parts?.[0]?.text || "").trim();
+            const lines2 = generated2.split("\n");
+            const subject2 = lines2[0].startsWith("Subject:") ? lines2[0].replace("Subject:", "").trim() : subjectHook;
+            const body2 = lines2[0].startsWith("Subject:") ? lines2.slice(2).join("\n").trim() : generated2;
+
+            const sender2 = await getAvailableOutbox(user_id, config2);
+            if (!sender2) {
+              console.warn(`[FOLLOWUP AGENT] [CRON] No outbox available for User ${user_id}. Skipping.`);
+              continue;
+            }
+
+            const nodemailer2 = await import("nodemailer");
+            const transporter2 = nodemailer2.default.createTransport({
+              service: "gmail",
+              auth: { user: sender2.email, pass: sender2.pass }
+            });
+
+            const baseUrl2 = await getDynamicBaseUrl();
+            const htmlBody2 = body2.replace(/\n/g, "<br/>") +
+              `<br/><br/><img src="${baseUrl2}/api/track-open/${lead.id}" width="1" height="1" style="display:none;"/>`;
+
+            await transporter2.sendMail({
+              from: `"${sender2.email.split('@')[0]}" <${sender2.email}>`,
+              to: lead.email,
+              subject: subject2,
+              html: htmlBody2
+            });
+
+            await pool.query(
+              `INSERT INTO emails (from_name, from_email, company, subject, preview, time_received, is_read, category, labels, user_id, lead_id, followup_number)
+               VALUES ($1, $2, $3, $4, $5, NOW(), TRUE, 'sent', ARRAY['sent'], $6, $7, $8)`,
+              [lead.name, lead.email, lead.name, subject2, body2, user_id, lead.id, followupNumber]
+            );
+
+            const maxFollowups2 = strategy.maxFollowups || 3;
+            const nextStep2 = strategy.steps && strategy.steps[followupNumber];
+            const nextDelayDays2 = nextStep2 ? nextStep2.dayOffset : 4;
+
+            if (followupNumber < maxFollowups2) {
+              await pool.query(
+                `UPDATE leads SET followup_count = $1, last_followup_at = NOW(),
+                 next_followup_at = NOW() + ($2 || ' days')::INTERVAL, status = 'contacted'
+                 WHERE id = $3 AND user_id = $4`,
+                [followupNumber, nextDelayDays2, lead.id, user_id]
+              );
+            } else {
+              await pool.query(
+                `UPDATE leads SET followup_count = $1, last_followup_at = NOW(), next_followup_at = NULL, followup_strategy = NULL
+                 WHERE id = $2 AND user_id = $3`,
+                [followupNumber, lead.id, user_id]
+              );
+            }
+
+            if (sender2.isCustom) {
+              await pool.query("UPDATE user_outboxes SET daily_sent_count = daily_sent_count + 1, last_sent_at = NOW() WHERE id = $1", [sender2.id]);
+            }
+            console.log(`[FOLLOWUP AGENT] [CRON] Follow-up #${followupNumber} sent to ${lead.name} (${lead.email}).`);
+          } catch (fuErr) {
+            console.error(`[FOLLOWUP AGENT] [CRON] Failed for ${lead.name}:`, fuErr.message);
+          }
+        }
+      } else {
+        console.log(`[FOLLOWUP AGENT] [CRON] User ${user_id}: No follow-ups due.`);
+      }
+    } catch (err) {
+      console.error("[FOLLOWUP AGENT] [CRON ERROR] Failed:", err.message);
+    }
+  }
+
   // 2. Perform lead scraping (only if both or fetch_only)
+
   let leadsFound = [];
   const newLeads = [];
   
@@ -7038,6 +7240,20 @@ async function syncUserInbox(userId, config) {
     return { success: false, error: "Gmail SMTP/IMAP credentials not connected. Please connect Gmail under settings." };
   }
 
+  // ── Ensure new columns exist (safe inline migration for when startup migrations failed) ──
+  try {
+    await pool.query(`ALTER TABLE emails ADD COLUMN IF NOT EXISTS email_uid VARCHAR(150) DEFAULT NULL;`);
+    await pool.query(`ALTER TABLE emails ADD COLUMN IF NOT EXISTS followup_number INTEGER DEFAULT 0;`);
+    await pool.query(`ALTER TABLE emails ADD COLUMN IF NOT EXISTS lead_id INTEGER REFERENCES leads(id) ON DELETE SET NULL;`);
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_emails_user_uid ON emails(user_id, email_uid) WHERE email_uid IS NOT NULL;`);
+    await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS followup_count INTEGER DEFAULT 0;`);
+    await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS next_followup_at TIMESTAMP DEFAULT NULL;`);
+    await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS last_followup_at TIMESTAMP DEFAULT NULL;`);
+    await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS followup_strategy JSONB DEFAULT NULL;`);
+  } catch (migErr) {
+    console.warn(`[EMAIL AGENT] [SYNC] Inline migration warning (non-fatal): ${migErr.message}`);
+  }
+
   console.log(`[EMAIL AGENT] [SYNC] Connecting to Gmail IMAP for User ${userId} (${gmail_user})...`);
 
   // Fetch all leads for this user to match incoming senders
@@ -7162,17 +7378,39 @@ async function syncUserInbox(userId, config) {
           const matchedLead = leadsMap.get(fromEmail);
           if (matchedLead) {
             const messageId = message.envelope.messageId || null;
-            // Check if this reply already exists in the database (by messageId or subject+fromEmail)
-            let emailCheck;
-            if (messageId) {
+            // Build a robust email_uid: prefer Gmail UID (message.uid), fallback to messageId, then hash of email+subject+date
+            const emailUid = message.uid
+              ? `uid:${userId}:${message.uid}`
+              : messageId
+                ? `mid:${messageId}`
+                : `hash:${fromEmail}:${subject}:${date ? new Date(date).toISOString().slice(0,19) : 'nodate'}`;
+
+            // Primary dedup: check email_uid (safe — column may not exist yet)
+            let emailCheck = { rowCount: 0, rows: [] };
+            try {
+              emailCheck = await pool.query(
+                "SELECT id FROM emails WHERE user_id = $1 AND email_uid = $2",
+                [userId, emailUid]
+              );
+            } catch (dupErr) {
+              if (dupErr.code !== '42703') throw dupErr; // only swallow "column does not exist"
+            }
+
+            // Fallback dedup: message_id
+            if (emailCheck.rowCount === 0 && messageId) {
               emailCheck = await pool.query(
                 "SELECT id FROM emails WHERE user_id = $1 AND message_id = $2",
                 [userId, messageId]
               );
-            } else {
+            }
+
+            // Fallback dedup: from_email + subject + date (within ±2 minutes)
+            if (emailCheck.rowCount === 0 && date) {
+              const exactDate = new Date(date).toISOString();
               emailCheck = await pool.query(
-                "SELECT id FROM emails WHERE user_id = $1 AND from_email = $2 AND subject = $3 AND time_received > NOW() - INTERVAL '7 days'",
-                [userId, fromEmail, subject]
+                `SELECT id FROM emails WHERE user_id = $1 AND from_email = $2 AND subject = $3
+                 AND time_received BETWEEN $4::timestamptz - INTERVAL '2 minutes' AND $4::timestamptz + INTERVAL '2 minutes'`,
+                [userId, fromEmail, subject, exactDate]
               );
             }
 
@@ -7198,20 +7436,35 @@ async function syncUserInbox(userId, config) {
               // Classify the incoming email category using AI
               const detectedCategory = await classifyIncomingEmail(bodyPreview, subject, config, userId);
 
-              // Insert email reply record in emails table with the detected category and message_id
+              // Insert email reply record — includes email_uid for dedup
               let insertedEmail;
               try {
                 insertedEmail = await pool.query(
-                  `INSERT INTO emails (from_name, from_email, company, subject, preview, time_received, is_read, category, labels, user_id, message_id)
-                   VALUES ($1, $2, $3, $4, $5, NOW(), FALSE, $6, ARRAY['inbox'], $7, $8) RETURNING *`,
-                  [matchedLead.name, fromEmail, matchedLead.name, subject, bodyPreview, detectedCategory, userId, messageId]
+                  `INSERT INTO emails (from_name, from_email, company, subject, preview, time_received, is_read, category, labels, user_id, message_id, email_uid, lead_id)
+                   VALUES ($1, $2, $3, $4, $5, COALESCE($9::timestamptz, NOW()), FALSE, $6, ARRAY['inbox'], $7, $8, $10, $11) RETURNING *`,
+                  [matchedLead.name, fromEmail, matchedLead.name, subject, bodyPreview, detectedCategory, userId, messageId, date ? new Date(date).toISOString() : null, emailUid, matchedLead.id]
                 );
               } catch (insertErr) {
                 if (insertErr.code === '23505') {
-                  console.log(`[EMAIL AGENT] [SYNC] User ${userId}: Duplicate message detected via unique constraint (23505). Skipping.`);
+                  console.log(`[EMAIL AGENT] [SYNC] User ${userId}: Duplicate message blocked via unique constraint (email_uid). Skipping.`);
                   continue;
                 }
-                throw insertErr;
+                // Column doesn't exist yet (migration race) — fall back to basic INSERT
+                if (insertErr.code === '42703') {
+                  console.warn(`[EMAIL AGENT] [SYNC] email_uid column not found — falling back to basic INSERT.`);
+                  try {
+                    insertedEmail = await pool.query(
+                      `INSERT INTO emails (from_name, from_email, company, subject, preview, time_received, is_read, category, labels, user_id, message_id)
+                       VALUES ($1, $2, $3, $4, $5, COALESCE($9::timestamptz, NOW()), FALSE, $6, ARRAY['inbox'], $7, $8) RETURNING *`,
+                      [matchedLead.name, fromEmail, matchedLead.name, subject, bodyPreview, detectedCategory, userId, messageId, date ? new Date(date).toISOString() : null]
+                    );
+                  } catch (fallbackErr) {
+                    if (fallbackErr.code === '23505') { continue; }
+                    throw fallbackErr;
+                  }
+                } else {
+                  throw insertErr;
+                }
               }
 
               // ── AUTO-REPLY / SPAM DETECTION ──

@@ -49,6 +49,13 @@ export default function Campaigns({
   const [sentTrackerLoading, setSentTrackerLoading] = useState(false);
   const [trackerFilter, setTrackerFilter] = useState("all"); // all | opened | unopened
 
+  // Follow-Up Queue
+  const [followupQueue, setFollowupQueue] = useState([]);
+  const [followupLoading, setFollowupLoading] = useState(false);
+  const [sendingFollowup, setSendingFollowup] = useState({});
+  const [generatingStrategy, setGeneratingStrategy] = useState({});
+  const [sendingAll, setSendingAll] = useState(false);
+
   const activeLeadId = selectedLeadId || (leads[0] ? leads[0].id.toString() : "");
 
   // Sequence Builder States
@@ -596,10 +603,11 @@ Do NOT wrap the JSON inside markdown code blocks. Return a raw JSON string.`;
         marginTop: "8px"
       }}>
         {[
-          { id: "composer", label: "✉️ Single Outreach Composer", desc: "Manual Client Loop" },
-          { id: "sequences", label: "⛓️ Drip Sequences Builder", desc: "Multi-Step Sequences" },
-          { id: "autopilot", label: "🤖 Autopilot Core & Stats", desc: "Autonomous background dispatcher" },
-          { id: "tracker", label: "📬 Sent Email Tracker", desc: "Open / Unopened status" }
+          { id: "composer",  label: "✉️ Single Outreach Composer",   desc: "Manual Client Loop" },
+          { id: "sequences", label: "⛓️ Drip Sequences Builder",      desc: "Multi-Step Sequences" },
+          { id: "autopilot", label: "🤖 Autopilot Core & Stats",       desc: "Autonomous background dispatcher" },
+          { id: "tracker",   label: "📬 Sent Email Tracker",           desc: "Open / Unopened status" },
+          { id: "followup",  label: "📅 Follow-Up Queue",             desc: "AI smart follow-up engine" },
         ].map(tb => (
           <button
             key={tb.id}
@@ -1364,6 +1372,222 @@ Do NOT wrap the JSON inside markdown code blocks. Return a raw JSON string.`;
               )}
             </div>
 
+          </div>
+        );
+      })()}
+      {campaignTab === "followup" && (() => {
+        // Fetch queue on tab open
+        if (followupQueue.length === 0 && !followupLoading) {
+          setFollowupLoading(true);
+          fetch("/api/leads/followup-queue", { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } })
+            .then(r => r.json())
+            .then(d => { setFollowupQueue(Array.isArray(d) ? d : []); })
+            .catch(() => {})
+            .finally(() => setFollowupLoading(false));
+        }
+
+        const refreshQueue = async () => {
+          setFollowupLoading(true);
+          try {
+            const r = await fetch("/api/leads/followup-queue", { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
+            const d = await r.json();
+            setFollowupQueue(Array.isArray(d) ? d : []);
+          } catch {} finally { setFollowupLoading(false); }
+        };
+
+        const handleSendFollowup = async (leadId) => {
+          setSendingFollowup(prev => ({ ...prev, [leadId]: true }));
+          try {
+            const r = await fetch(`/api/leads/${leadId}/send-followup`, {
+              method: "POST",
+              headers: { Authorization: `Bearer ${localStorage.getItem("token")}` }
+            });
+            const d = await r.json();
+            if (r.ok) {
+              showToast(`Follow-up #${d.followupNumber} sent ✓`, "success");
+              await refreshQueue();
+            } else {
+              showToast(`Failed: ${d.error}`, "danger");
+            }
+          } catch { showToast("Network error.", "danger"); }
+          finally { setSendingFollowup(prev => ({ ...prev, [leadId]: false })); }
+        };
+
+        const handleGenerateStrategy = async (leadId) => {
+          setGeneratingStrategy(prev => ({ ...prev, [leadId]: true }));
+          try {
+            const r = await fetch(`/api/leads/${leadId}/generate-followup-strategy`, {
+              method: "POST",
+              headers: { Authorization: `Bearer ${localStorage.getItem("token")}` }
+            });
+            const d = await r.json();
+            if (r.ok) {
+              showToast(`Strategy generated for lead ✨`, "success");
+              await refreshQueue();
+            } else {
+              showToast(`Failed: ${d.error}`, "danger");
+            }
+          } catch { showToast("Network error.", "danger"); }
+          finally { setGeneratingStrategy(prev => ({ ...prev, [leadId]: false })); }
+        };
+
+        const handleSendAll = async () => {
+          setSendingAll(true);
+          const due = followupQueue.filter(l => !l.next_followup_at || new Date(l.next_followup_at) <= new Date());
+          let sent = 0;
+          for (const lead of due) {
+            try {
+              const r = await fetch(`/api/leads/${lead.id}/send-followup`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${localStorage.getItem("token")}` }
+              });
+              if (r.ok) sent++;
+            } catch {}
+          }
+          showToast(`Sent ${sent} follow-up${sent === 1 ? "" : "s"} ✓`, "success");
+          await refreshQueue();
+          setSendingAll(false);
+        };
+
+        const openCount = followupQueue.filter(l => l.is_opened).length;
+        const openRate = followupQueue.length > 0 ? Math.round((openCount / followupQueue.length) * 100) : 0;
+        const dueNow = followupQueue.filter(l => !l.next_followup_at || new Date(l.next_followup_at) <= new Date());
+        const followupsSentTotal = followupQueue.reduce((sum, l) => sum + (l.followup_count || 0), 0);
+
+        function timeAgo(ts) {
+          if (!ts) return "—";
+          const d = new Date(ts), now = new Date();
+          const diff = Math.floor((now - d) / 86400000);
+          return diff === 0 ? "Today" : diff === 1 ? "Yesterday" : `${diff}d ago`;
+        }
+
+        return (
+          <div style={{ padding: "24px 0" }}>
+            {/* Stats header */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 24 }}>
+              {[
+                { label: "Leads in Queue", value: followupQueue.length, color: "var(--brand)", icon: "📋" },
+                { label: "Due Now",        value: dueNow.length,         color: "#f97316",    icon: "⏰" },
+                { label: "Total Sent",     value: followupsSentTotal,    color: "var(--success)", icon: "📤" },
+                { label: "Open Rate",      value: `${openRate}%`,        color: openRate > 40 ? "var(--success)" : "var(--text-3)", icon: "👁" },
+              ].map(s => (
+                <div key={s.label} className="glass-panel" style={{ padding: "16px 20px", textAlign: "center", borderRadius: 12, border: "1px solid var(--border-1)" }}>
+                  <div style={{ fontSize: 22, marginBottom: 4 }}>{s.icon}</div>
+                  <div style={{ fontSize: 28, fontWeight: 800, color: s.color, lineHeight: 1 }}>{s.value}</div>
+                  <div style={{ fontSize: 11, color: "var(--text-4)", marginTop: 4 }}>{s.label}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Action bar */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--text-1)" }}>
+                📅 Follow-Up Queue
+                {dueNow.length > 0 && (
+                  <span style={{ marginLeft: 10, fontSize: 11, background: "rgba(249,115,22,0.15)", color: "#ea580c", padding: "2px 8px", borderRadius: 999, fontWeight: 700 }}>
+                    {dueNow.length} overdue
+                  </span>
+                )}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="btn btn-ghost btn-sm" onClick={refreshQueue} disabled={followupLoading}>
+                  {followupLoading ? "⟳ Loading..." : "🔄 Refresh"}
+                </button>
+                {dueNow.length > 0 && (
+                  <button className="btn btn-primary btn-sm" onClick={handleSendAll} disabled={sendingAll}>
+                    {sendingAll ? "Sending all..." : `⚡ Send All Due (${dueNow.length})`}
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Table */}
+            {followupLoading ? (
+              <div style={{ textAlign: "center", padding: 40, color: "var(--text-4)" }}>Loading follow-up queue...</div>
+            ) : followupQueue.length === 0 ? (
+              <div className="empty-state">
+                <div className="empty-state-icon">📅</div>
+                <div className="empty-state-title">No follow-ups queued</div>
+                <div className="empty-state-desc">Leads you've emailed will appear here once they are due for follow-up.</div>
+              </div>
+            ) : (
+              <div style={{ borderRadius: 12, border: "1px solid var(--border-1)", overflow: "hidden" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr style={{ background: "var(--bg-overlay)", borderBottom: "1px solid var(--border-1)" }}>
+                      {["Lead", "Open Status", "Since Email", "Follow-Up #", "Strategy", "Next Due", "Actions"].map(h => (
+                        <th key={h} style={{ padding: "10px 14px", fontSize: 11, fontWeight: 700, color: "var(--text-3)", textAlign: "left", textTransform: "uppercase", letterSpacing: "0.05em" }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {followupQueue.map(lead => {
+                      const isDue = !lead.next_followup_at || new Date(lead.next_followup_at) <= new Date();
+                      const strategy = lead.followup_strategy || {};
+                      return (
+                        <tr key={lead.id} style={{ borderBottom: "1px solid var(--border-2)", background: isDue ? "rgba(249,115,22,0.04)" : "transparent", transition: "background 0.1s" }}>
+                          <td style={{ padding: "12px 14px" }}>
+                            <div style={{ fontWeight: 700, fontSize: 13, color: "var(--text-1)" }}>{lead.name}</div>
+                            <div style={{ fontSize: 11, color: "var(--text-4)" }}>{lead.city} · {lead.type}</div>
+                            {lead.qualification_score && <div style={{ fontSize: 10, color: "var(--brand)", marginTop: 2 }}>Score {lead.qualification_score}%</div>}
+                          </td>
+                          <td style={{ padding: "12px 14px" }}>
+                            {lead.is_opened
+                              ? <span className="badge badge-success" style={{ fontSize: 11 }}>👁 Opened</span>
+                              : <span className="badge badge-neutral" style={{ fontSize: 11 }}>📩 Unopened</span>}
+                          </td>
+                          <td style={{ padding: "12px 14px", fontSize: 12, color: "var(--text-3)" }}>
+                            {timeAgo(lead.contacted_at)}
+                          </td>
+                          <td style={{ padding: "12px 14px", textAlign: "center" }}>
+                            <span className="badge badge-warning" style={{ fontSize: 11 }}>
+                              {lead.followup_count || 0} / {strategy.maxFollowups || "—"}
+                            </span>
+                          </td>
+                          <td style={{ padding: "12px 14px", maxWidth: 180 }}>
+                            {strategy.angle ? (
+                              <div style={{ fontSize: 11, color: "var(--text-2)", lineHeight: 1.4 }}>
+                                <span style={{ fontSize: 10, color: "var(--brand)", fontWeight: 700 }}>{strategy.tone?.replace(/_/g, " ").toUpperCase()}</span><br/>
+                                {strategy.angle.substring(0, 80)}{strategy.angle.length > 80 ? "..." : ""}
+                              </div>
+                            ) : (
+                              <span style={{ fontSize: 11, color: "var(--text-4)" }}>Not generated</span>
+                            )}
+                          </td>
+                          <td style={{ padding: "12px 14px", fontSize: 12 }}>
+                            {isDue
+                              ? <span style={{ color: "#ea580c", fontWeight: 700 }}>⚡ Due now</span>
+                              : <span style={{ color: "var(--text-3)" }}>In {Math.ceil((new Date(lead.next_followup_at) - new Date()) / 86400000)}d</span>}
+                          </td>
+                          <td style={{ padding: "12px 14px" }}>
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                              {!strategy.angle && (
+                                <button
+                                  className="btn btn-ghost btn-sm"
+                                  onClick={() => handleGenerateStrategy(lead.id)}
+                                  disabled={generatingStrategy[lead.id]}
+                                  style={{ fontSize: 11 }}
+                                >
+                                  {generatingStrategy[lead.id] ? "..." : "🪄 Strategy"}
+                                </button>
+                              )}
+                              <button
+                                className="btn btn-primary btn-sm"
+                                onClick={() => handleSendFollowup(lead.id)}
+                                disabled={sendingFollowup[lead.id] || sendingAll}
+                                style={{ fontSize: 11, background: isDue ? "var(--brand)" : "transparent", border: `1px solid var(--brand)`, color: isDue ? "white" : "var(--brand)" }}
+                              >
+                                {sendingFollowup[lead.id] ? "Sending..." : `▶ Send #${(lead.followup_count || 0) + 1}`}
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         );
       })()}
