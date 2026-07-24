@@ -220,15 +220,17 @@ export async function scrapeGoogleMaps({ userId, niche, location, limit = 5, add
         } catch {}
       }
 
+      const cleanString = (str) => str ? str.replace(/[\uE000-\uF8FF]/g, "").trim() : null;
+
       const scrapedLead = {
         user_id: userId,
         niche,
         location,
-        name: name.trim(),
-        address: address ? address.trim() : null,
-        phone: phone ? phone.trim() : null,
-        website: website ? website.trim() : null,
-        category: category ? category.trim() : null,
+        name: cleanString(name) || "Unknown",
+        address: cleanString(address),
+        phone: cleanString(phone),
+        website: cleanString(website),
+        category: cleanString(category),
         rating: isNaN(rating) ? null : rating,
         reviews: isNaN(reviews) ? null : reviews,
         source: "google_maps",

@@ -4,6 +4,7 @@ import { scrapeGoogleMaps } from "./scraperService.js";
 import { enrichWebsite } from "./enrichmentService.js";
 import { calculateQualityScore } from "./scoringService.js";
 import { checkDeduplication } from "./dedupService.js";
+import { verifyEmail } from "./emailVerificationService.js";
 
 dotenv.config();
 
@@ -64,11 +65,14 @@ export async function runScraperPipeline({ userId, niche, location, limit = 5, s
       }
     }
 
+    const isEmailConfirmed = await verifyEmail(rawLead.email);
+    addLog(`[PIPELINE] Verifying email "${rawLead.email || "None"}": ${isEmailConfirmed ? "VALID" : "INVALID/UNCONFIRMED"}`);
+
     // Merge raw lead details with enrichment details
     const mergedLead = {
       ...rawLead,
       ...enrichment,
-      email_confirmed: rawLead.email ? true : false
+      email_confirmed: isEmailConfirmed
     };
 
     // 3. Stage 3: Quality Scorer

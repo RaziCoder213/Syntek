@@ -9,7 +9,7 @@ import Settings from "./components/Settings";
 import Inbox from "./components/Inbox";
 import Copilot from "./components/Copilot";
 
-/* âââ Global fetch interceptor: inject auth headers âââ */
+/* 🌐 Global fetch interceptor: inject auth headers 🌐 */
 const _origFetch = window.fetch;
 window.fetch = function (url, options = {}) {
   const userId = localStorage.getItem("x-user-id");
@@ -32,27 +32,27 @@ window.fetch = function (url, options = {}) {
   });
 };
 
-/* âââ Navigation config âââ */
+/* 🧭 Navigation config 🧭 */
 const NAV = [
-  { id: "Dashboard",   icon: "â¬¡",  label: "Dashboard" },
-  { id: "Leads",       icon: "âŽ",  label: "Lead Finder" },
-  { id: "Pipeline",    icon: "â¦",  label: "Pipeline",   badge: null },
-  { id: "Inbox",       icon: "â",  label: "Inbox",      badge: null },
-  { id: "Automation",  icon: "âš¡", label: "Automation" },
-  { id: "Settings",    icon: "âš",  label: "Settings" },
+  { id: "Dashboard",   icon: "📊",  label: "Dashboard" },
+  { id: "Leads",       icon: "🔍",  label: "Lead Finder" },
+  { id: "Pipeline",    icon: "📋",  label: "Pipeline",   badge: null },
+  { id: "Inbox",       icon: "✉️",  label: "Inbox",      badge: null },
+  { id: "Automation",  icon: "⚡",  label: "Automation" },
+  { id: "Settings",    icon: "⚙️",  label: "Settings" },
 ];
 
 export default function App() {
-  /* âââ Session âââ */
+  /* 👤 Session 👤 */
   const [currentUser, setCurrentUser]       = useState(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [appReady, setAppReady]             = useState(false);
 
-  /* âââ Navigation âââ */
+  /* 🧭 Navigation 🧭 */
   const [tab, setTab]                           = useState(() => localStorage.getItem("active_tab") || "Dashboard");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
-  /* âââ Toast notifications âââ */
+  /* 🔔 Toast notifications 🔔 */
   const [toasts, setToasts] = useState([]);
   const showToast = useCallback((message, type = "info") => {
     const id = Date.now() + Math.random();
@@ -60,7 +60,7 @@ export default function App() {
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
   }, []);
 
-  /* âââ Core data state âââ */
+  /* 📊 Core data state 📊 */
   const [leads, setLeads]   = useState([]);
   const [emails, setEmails] = useState([]);
   const [analytics, setAnalytics] = useState({
@@ -69,7 +69,7 @@ export default function App() {
     weeklyLeads: [0,0,0,0,0,0,0], opensByDay: [0,0,0,0,0,0,0],
   });
 
-  /* âââ Campaign settings âââ */
+  /* ⚙️ Campaign settings ⚙️ */
   const [settings, setSettings] = useState({
     gmailUser: "", gmailPass: "", geminiKey: "",
     senderName: "", senderRole: "", companyName: "",
@@ -89,13 +89,13 @@ export default function App() {
     kanbanStages: ["New", "Researched", "Drafted", "Contacted", "Opened", "Replied", "Won", "Archived"],
   });
 
-  /* âââ Ref mirrors for async callbacks âââ */
+  /* 🔄 Ref mirrors for async callbacks 🔄 */
   const settingsRef = useRef(settings);
   useEffect(() => { settingsRef.current = settings; }, [settings]);
   const leadsRef = useRef(leads);
   useEffect(() => { leadsRef.current = leads; }, [leads]);
 
-  /* âââ Notifications state & handlers âââ */
+  /* 🔔 Notifications state & handlers 🔔 */
   const [notifications, setNotifications] = useState([]);
   const [showNotifDropdown, setShowNotifDropdown] = useState(false);
 
@@ -174,14 +174,14 @@ export default function App() {
     }
   };
 
-  /* âââ Unauthorized handler âââ */
+  /* 🛡️ Unauthorized handler 🛡️ */
   useEffect(() => {
     const h = () => { setCurrentUser(null); showToast("Session expired. Please log in again.", "danger"); };
     window.addEventListener("syntek-unauthorized", h);
     return () => window.removeEventListener("syntek-unauthorized", h);
   }, [showToast]);
 
-  /* âââ Restore session on mount âââ */
+  /* 🔄 Restore session on mount 🔄 */
   useEffect(() => {
     const saved = localStorage.getItem("current_user");
     if (saved) {
@@ -190,10 +190,10 @@ export default function App() {
     setAppReady(true);
   }, []);
 
-  /* âââ Persist active tab âââ */
+  /* 📂 Persist active tab 📂 */
   useEffect(() => { localStorage.setItem("active_tab", tab); }, [tab]);
 
-  /* âââ Load settings from server âââ */
+  /* 📥 Load settings from server 📥 */
   useEffect(() => {
     if (!currentUser) return;
     async function fetchSettings() {
@@ -246,7 +246,7 @@ export default function App() {
     fetchSettings();
   }, [currentUser]);
 
-  /* âââ Load leads, emails, analytics âââ */
+  /* 📥 Load leads, emails, analytics 📥 */
   const loadData = useCallback(async () => {
     if (!currentUser) return;
     try {
@@ -297,7 +297,7 @@ export default function App() {
   }, [currentUser, loadData]);
 
 
-  /* âââ Handlers âââ */
+  /* 🛠️ Handlers 🛠️ */
   function handleLogin(user) {
     setCurrentUser(user);
     localStorage.setItem("current_user", JSON.stringify(user));
@@ -385,17 +385,17 @@ export default function App() {
     );
   }
 
-  /* âââ Unread inbox count for badge âââ */
+  /* ✉️ Unread inbox count for badge ✉️ */
   const unreadCount = emails.filter(e => !e.read && e.category !== 'draft' && !(e.labels && e.labels.includes('pending_reply'))).length;
   const notContactedCount = leads.filter(l => l.status === "not contacted").length;
 
   const initials = (currentUser.company_name || currentUser.email || "U")
     .substring(0, 2).toUpperCase();
 
-  /* âââ Toast icons âââ */
+  /* 🔔 Toast icons 🔔 */
   const toastIcon = { success: "✓", danger: "✕", info: "ℹ️", warning: "⚠️" };
 
-  /* âââ Page titles âââ */
+  /* 📄 Page titles 📄 */
   const pageTitle = {
     Dashboard:  "Dashboard",
     Leads:      "Lead Finder",
@@ -407,7 +407,7 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      {/* ââ Sidebar ââ */}
+      {/* 📂 Sidebar 📂 */}
       <aside className={`sidebar ${sidebarCollapsed ? "collapsed" : ""}`}>
         {/* Logo */}
         <div className="sidebar-logo">
@@ -451,12 +451,12 @@ export default function App() {
             onClick={() => setSidebarCollapsed(v => !v)}
             title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
           >
-            {sidebarCollapsed ? "â" : "â"}
+            {sidebarCollapsed ? "▶" : "◀"}
           </button>
         </div>
       </aside>
 
-      {/* ââ Main area ââ */}
+      {/* 🖥️ Main area 🖥️ */}
       <div className="main-area">
         {/* Topbar */}
         <header className="topbar">
@@ -648,7 +648,7 @@ export default function App() {
                                 }}
                                 title="Delete"
                               >
-                                â
+                                ✕
                               </button>
                             </div>
                           </div>
@@ -717,21 +717,21 @@ export default function App() {
         </main>
       </div>
 
-      {/* ââ Toast stack ââ */}
+      {/* 🔔 Toast stack 🔔 */}
       <div className="toast-stack">
         {toasts.map(t => (
           <div key={t.id} className={`toast toast-${t.type}`}>
-            <span>{toastIcon[t.type] || "â¹"}</span>
+            <span>{toastIcon[t.type] || "ℹ️"}</span>
             <span style={{ flex: 1 }}>{t.message}</span>
             <button
               onClick={() => setToasts(prev => prev.filter(x => x.id !== t.id))}
               style={{ opacity: 0.6, fontSize: 14, padding: "0 4px" }}
-            >â</button>
+            >✕</button>
           </div>
         ))}
       </div>
 
-      {/* ââ Global AI Co-pilot Drawer ââ */}
+      {/* 🤖 Global AI Co-pilot Drawer 🤖 */}
       {currentUser && (
         <Copilot showToast={showToast} onRefreshAll={loadData} />
       )}

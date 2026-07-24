@@ -262,6 +262,10 @@ export default function Settings({ settings, onSave, showToast, currentUser }) {
                       <option value="whatsapp_bot">WhatsApp Booking Bot</option>
                       <option value="website_dev">Website Design</option>
                       <option value="ai_chatbot">AI Chatbot</option>
+                      <option value="gmb_seo">Google Maps SEO / GMB Optimization</option>
+                      <option value="speed_opt">Website Speed Optimization</option>
+                      <option value="review_auto">Automated Reviews Collection</option>
+                      <option value="social_auto">Social Media Automation</option>
                       <option value="custom">Custom Offer</option>
                     </select>
                   </div>

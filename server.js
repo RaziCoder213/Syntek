@@ -1647,6 +1647,28 @@ app.put("/api/leads/bulk-status", authenticate, async (req, res) => {
       [status, pipeline_stage, leadIds, req.userId]
     );
 
+    // Delete associated emails if archived/trashed or disappearing stage
+    if (status === 'archived' || status === 'trashed' || 
+        (pipeline_stage && (
+          pipeline_stage.toLowerCase().includes("trash") ||
+          pipeline_stage.toLowerCase().includes("archive") ||
+          pipeline_stage.toLowerCase().includes("delete") ||
+          pipeline_stage.toLowerCase().includes("disappear")
+        ))) {
+      const leadsEmailsRes = await pool.query(
+        "SELECT id, email FROM leads WHERE id = ANY($1) AND user_id = $2 AND email IS NOT NULL AND email != ''",
+        [leadIds, req.userId]
+      );
+      if (leadsEmailsRes.rowCount > 0) {
+        const emailsToDelete = leadsEmailsRes.rows.map(r => r.email.toLowerCase());
+        const idsToDelete = leadsEmailsRes.rows.map(r => r.id);
+        await pool.query(
+          "DELETE FROM emails WHERE user_id = $1 AND (lead_id = ANY($2) OR LOWER(from_email) = ANY($3))",
+          [req.userId, idsToDelete, emailsToDelete]
+        );
+      }
+    }
+
     if (pipeline_stage === 'Re-research') {
       const pendingJob = await pool.query(
         "SELECT id FROM job_queue WHERE user_id = $1 AND job_type = 're_research' AND status = 'pending'",
@@ -1733,7 +1755,7 @@ app.post("/api/leads", authenticate, async (req, res) => {
     const initialStage = email ? "New" : "Re-research";
     const result = await pool.query(
       "INSERT INTO leads (name, type, city, email, phone, rating, reviews, status, instagram, user_id, pipeline_stage) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *",
-      [name, type, city, email, phone, rating || 4.0, reviews || 0, email ? (status || "not contacted") : "no_email", instagram, req.userId, initialStage]
+      [name, type, city, email, phone, rating || 4.0, reviews || 0, status || (email ? "not contacted" : "no_email"), instagram, req.userId, initialStage]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -1761,9 +1783,25 @@ app.put("/api/leads/:id/status", authenticate, async (req, res) => {
       query += ", pipeline_stage = $4";
       params.push(pipeline_stage);
     }
-    query += " WHERE id = $2 AND user_id = $3 RETURNING *";
     const result = await pool.query(query, params);
     if (result.rowCount === 0) return res.status(404).json({ error: "Lead not found" });
+
+    // Remove from smart inbox and sent folders if moved to a disappearing stage or archived/trashed status
+    if (status === 'archived' || status === 'trashed' || 
+        (pipeline_stage && (
+          pipeline_stage.toLowerCase().includes("trash") ||
+          pipeline_stage.toLowerCase().includes("archive") ||
+          pipeline_stage.toLowerCase().includes("delete") ||
+          pipeline_stage.toLowerCase().includes("disappear")
+        ))) {
+      const leadEmail = result.rows[0].email;
+      if (leadEmail) {
+        await pool.query(
+          "DELETE FROM emails WHERE user_id = $1 AND (lead_id = $2 OR LOWER(from_email) = LOWER($3))",
+          [req.userId, id, leadEmail]
+        );
+      }
+    }
 
     if (pipeline_stage === 'Re-research') {
       const pendingJob = await pool.query(
@@ -3138,7 +3176,11 @@ app.get("/api/emails", authenticate, async (req, res) => {
       `SELECT e.*, COALESCE(l.is_opened, FALSE) AS lead_is_opened,
               l.contacted_at, l.followup_count, l.next_followup_at, l.qualification_score
        FROM emails e
-       LEFT JOIN leads l ON LOWER(e.from_email) = LOWER(l.email) AND e.user_id = l.user_id
+       LEFT JOIN (
+         SELECT DISTINCT ON (LOWER(email), user_id) *
+         FROM leads
+         ORDER BY LOWER(email), user_id, id DESC
+       ) l ON LOWER(e.from_email) = LOWER(l.email) AND e.user_id = l.user_id
        WHERE e.user_id = $1 ${tabFilter}
        ORDER BY e.time_received DESC, e.id DESC
        LIMIT $2 OFFSET $3`,
@@ -5155,6 +5197,14 @@ async function generateDeveloperOutreach(lead, config) {
     offerShort = "a high-performing website overhaul that converts web traffic into bookings";
   } else if (pitchOffer === "ai_chatbot") {
     offerShort = "an automated AI receptionist for website & Instagram inquiry response";
+  } else if (pitchOffer === "gmb_seo") {
+    offerShort = "local SEO and Google Business Profile optimization to help you rank in the top 3 spots";
+  } else if (pitchOffer === "speed_opt") {
+    offerShort = "website speed optimization to fix slow page load times and stop losing visitors";
+  } else if (pitchOffer === "review_auto") {
+    offerShort = "an automated review collection campaign to get you more 5-star Google reviews on autopilot";
+  } else if (pitchOffer === "social_auto") {
+    offerShort = "social media automation to schedule posts and instantly reply to Instagram/Facebook comments";
   } else if (pitchOffer === "custom" && customOfferDetails) {
     offerShort = customOfferDetails;
   }
