@@ -399,6 +399,9 @@ function LeadDetailDrawer({ lead, onClose, onDraftEmail, onUpdateStatus }) {
                   { label: "Rating", value: lead.rating ? `${lead.rating} ⭐` : "—" },
                   { label: "Reviews", value: lead.reviews ? `${lead.reviews}` : "—" },
                   { label: "AI Match Score", value: lead.qualification_score !== null && lead.qualification_score !== undefined ? `🎯 ${lead.qualification_score}%` : "—" },
+                  { label: "Decision Maker", value: lead.owner_name ? `👑 ${lead.owner_name} (${lead.owner_role || "Founder/CEO"})` : "—", color: lead.owner_name ? "var(--brand)" : undefined },
+                  { label: "MX Email Status", value: lead.email_confirmed ? "✓ MX Verified (Active Mail Server)" : (lead.email ? "⚠ Unverified / Pending MX" : "—"), color: lead.email_confirmed ? "#84cc16" : undefined },
+                  { label: "AI Icebreaker", value: lead.personalized_icebreaker || "—" },
                   { label: "Location", value: lead.city || "—" },
                   { label: "Category", value: lead.type || "—" },
                   {
@@ -1566,12 +1569,25 @@ Rules:
                     <td>
                       <div style={{ fontWeight: 600, color: "var(--text-1)", fontSize: 13 }}>{l.name}</div>
                       <div style={{ fontSize: 11.5, color: "var(--text-4)" }}>{l.type} · {l.city}</div>
+                      {l.owner_name && (
+                        <div style={{ fontSize: 11, color: "var(--brand)", fontWeight: 600, marginTop: 2, display: "flex", alignItems: "center", gap: 3 }}>
+                          👑 {l.owner_name} <span style={{ fontWeight: 400, color: "var(--text-4)" }}>({l.owner_role || "Founder/CEO"})</span>
+                        </div>
+                      )}
                     </td>
                     <td>
-                      {l.email
-                        ? <a href={`mailto:${l.email}`} style={{ fontSize: 12, color: "var(--brand)", fontFamily: "var(--font-mono)" }} onClick={e => e.stopPropagation()}>{l.email}</a>
-                        : <span style={{ fontSize: 12, color: "var(--text-4)" }}>—</span>
-                      }
+                      {l.email ? (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                            <a href={`mailto:${l.email}`} style={{ fontSize: 12, color: "var(--brand)", fontFamily: "var(--font-mono)" }} onClick={e => e.stopPropagation()}>{l.email}</a>
+                            {l.email_confirmed && (
+                              <span style={{ fontSize: 9.5, color: "#84cc16", fontWeight: 700, background: "rgba(132,204,22,0.1)", padding: "1px 5px", borderRadius: 4, border: "1px solid rgba(132,204,22,0.25)" }}>
+                                ✓ MX Verified
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      ) : <span style={{ fontSize: 12, color: "var(--text-4)" }}>—</span>}
                       {l.phone && <div style={{ fontSize: 11.5, color: "var(--text-4)", fontFamily: "var(--font-mono)" }}>{l.phone}</div>}
                     </td>
                     <td>

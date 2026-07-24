@@ -9,7 +9,7 @@ import Settings from "./components/Settings";
 import Inbox from "./components/Inbox";
 import Copilot from "./components/Copilot";
 
-/* ─── Global fetch interceptor: inject auth headers ─── */
+/* âââ Global fetch interceptor: inject auth headers âââ */
 const _origFetch = window.fetch;
 window.fetch = function (url, options = {}) {
   const userId = localStorage.getItem("x-user-id");
@@ -32,27 +32,27 @@ window.fetch = function (url, options = {}) {
   });
 };
 
-/* ─── Navigation config ─── */
+/* âââ Navigation config âââ */
 const NAV = [
-  { id: "Dashboard",   icon: "⬡",  label: "Dashboard" },
-  { id: "Leads",       icon: "◎",  label: "Lead Finder" },
-  { id: "Pipeline",    icon: "▦",  label: "Pipeline",   badge: null },
-  { id: "Inbox",       icon: "✉",  label: "Inbox",      badge: null },
-  { id: "Automation",  icon: "⚡", label: "Automation" },
-  { id: "Settings",    icon: "⚙",  label: "Settings" },
+  { id: "Dashboard",   icon: "â¬¡",  label: "Dashboard" },
+  { id: "Leads",       icon: "âŽ",  label: "Lead Finder" },
+  { id: "Pipeline",    icon: "â¦",  label: "Pipeline",   badge: null },
+  { id: "Inbox",       icon: "â",  label: "Inbox",      badge: null },
+  { id: "Automation",  icon: "âš¡", label: "Automation" },
+  { id: "Settings",    icon: "âš",  label: "Settings" },
 ];
 
 export default function App() {
-  /* ─── Session ─── */
+  /* âââ Session âââ */
   const [currentUser, setCurrentUser]       = useState(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [appReady, setAppReady]             = useState(false);
 
-  /* ─── Navigation ─── */
+  /* âââ Navigation âââ */
   const [tab, setTab]                           = useState(() => localStorage.getItem("active_tab") || "Dashboard");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
-  /* ─── Toast notifications ─── */
+  /* âââ Toast notifications âââ */
   const [toasts, setToasts] = useState([]);
   const showToast = useCallback((message, type = "info") => {
     const id = Date.now() + Math.random();
@@ -60,7 +60,7 @@ export default function App() {
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
   }, []);
 
-  /* ─── Core data state ─── */
+  /* âââ Core data state âââ */
   const [leads, setLeads]   = useState([]);
   const [emails, setEmails] = useState([]);
   const [analytics, setAnalytics] = useState({
@@ -69,7 +69,7 @@ export default function App() {
     weeklyLeads: [0,0,0,0,0,0,0], opensByDay: [0,0,0,0,0,0,0],
   });
 
-  /* ─── Campaign settings ─── */
+  /* âââ Campaign settings âââ */
   const [settings, setSettings] = useState({
     gmailUser: "", gmailPass: "", geminiKey: "",
     senderName: "", senderRole: "", companyName: "",
@@ -89,13 +89,13 @@ export default function App() {
     kanbanStages: ["New", "Researched", "Drafted", "Contacted", "Opened", "Replied", "Won", "Archived"],
   });
 
-  /* ─── Ref mirrors for async callbacks ─── */
+  /* âââ Ref mirrors for async callbacks âââ */
   const settingsRef = useRef(settings);
   useEffect(() => { settingsRef.current = settings; }, [settings]);
   const leadsRef = useRef(leads);
   useEffect(() => { leadsRef.current = leads; }, [leads]);
 
-  /* ─── Notifications state & handlers ─── */
+  /* âââ Notifications state & handlers âââ */
   const [notifications, setNotifications] = useState([]);
   const [showNotifDropdown, setShowNotifDropdown] = useState(false);
 
@@ -174,14 +174,14 @@ export default function App() {
     }
   };
 
-  /* ─── Unauthorized handler ─── */
+  /* âââ Unauthorized handler âââ */
   useEffect(() => {
     const h = () => { setCurrentUser(null); showToast("Session expired. Please log in again.", "danger"); };
     window.addEventListener("syntek-unauthorized", h);
     return () => window.removeEventListener("syntek-unauthorized", h);
   }, [showToast]);
 
-  /* ─── Restore session on mount ─── */
+  /* âââ Restore session on mount âââ */
   useEffect(() => {
     const saved = localStorage.getItem("current_user");
     if (saved) {
@@ -190,10 +190,10 @@ export default function App() {
     setAppReady(true);
   }, []);
 
-  /* ─── Persist active tab ─── */
+  /* âââ Persist active tab âââ */
   useEffect(() => { localStorage.setItem("active_tab", tab); }, [tab]);
 
-  /* ─── Load settings from server ─── */
+  /* âââ Load settings from server âââ */
   useEffect(() => {
     if (!currentUser) return;
     async function fetchSettings() {
@@ -231,9 +231,12 @@ export default function App() {
           autopilotMode:      c.autopilot_mode    || prev.autopilotMode,
           kanbanStages:       c.kanbanStages      || prev.kanbanStages,
           reResearchEnabled:  c.re_research_enabled ?? prev.reResearchEnabled,
+          smtpHost:           c.smtp_host         ?? prev.smtpHost ?? null,
+          smtpPort:           c.smtp_port         ?? prev.smtpPort ?? null,
+          imapHost:           c.imap_host         ?? prev.imapHost ?? null,
+          imapPort:           c.imap_port         ?? prev.imapPort ?? null,
         }));
-        // Show onboarding if no Gmail configured yet
-        if (!c.gmail_user && !localStorage.getItem("syntek_onboarded")) {
+        if (!c.gmail_user && !localStorage.getItem('syntek_onboarded')) {
           setShowOnboarding(true);
         }
       } catch (e) {
@@ -243,7 +246,7 @@ export default function App() {
     fetchSettings();
   }, [currentUser]);
 
-  /* ─── Load leads, emails, analytics ─── */
+  /* âââ Load leads, emails, analytics âââ */
   const loadData = useCallback(async () => {
     if (!currentUser) return;
     try {
@@ -294,7 +297,7 @@ export default function App() {
   }, [currentUser, loadData]);
 
 
-  /* ─── Handlers ─── */
+  /* âââ Handlers âââ */
   function handleLogin(user) {
     setCurrentUser(user);
     localStorage.setItem("current_user", JSON.stringify(user));
@@ -343,6 +346,10 @@ export default function App() {
           autopilot_mode: updates.autopilotMode ?? settings.autopilotMode,
           kanban_stages: updates.kanbanStages ?? settings.kanbanStages,
           re_research_enabled: updates.reResearchEnabled ?? settings.reResearchEnabled,
+          smtp_host: updates.smtpHost ?? settings.smtpHost ?? null,
+          smtp_port: updates.smtpPort ?? settings.smtpPort ?? null,
+          imap_host: updates.imapHost ?? settings.imapHost ?? null,
+          imap_port: updates.imapPort ?? settings.imapPort ?? null,
         }),
       });
       if (res.ok) {
@@ -356,7 +363,7 @@ export default function App() {
     }
   }
 
-  /* ─── Auth guard ─── */
+  /* âââ Auth guard âââ */
   if (!appReady) return null;
   if (!currentUser) return <Auth onLogin={handleLogin} />;
   if (showOnboarding) {
@@ -368,7 +375,7 @@ export default function App() {
           localStorage.setItem("syntek_onboarded", "1");
           setShowOnboarding(false);
           setTab("Dashboard");
-          showToast("Welcome to Syntek! 🎉", "success");
+          showToast("Welcome to Syntek! ðŸŽ", "success");
         }}
         onSkip={() => {
           localStorage.setItem("syntek_onboarded", "1");
@@ -378,17 +385,17 @@ export default function App() {
     );
   }
 
-  /* ─── Unread inbox count for badge ─── */
+  /* âââ Unread inbox count for badge âââ */
   const unreadCount = emails.filter(e => !e.read && e.category !== 'draft' && !(e.labels && e.labels.includes('pending_reply'))).length;
   const notContactedCount = leads.filter(l => l.status === "not contacted").length;
 
   const initials = (currentUser.company_name || currentUser.email || "U")
     .substring(0, 2).toUpperCase();
 
-  /* ─── Toast icons ─── */
-  const toastIcon = { success: "✓", danger: "✕", info: "ℹ", warning: "⚠" };
+  /* âââ Toast icons âââ */
+  const toastIcon = { success: "✓", danger: "✕", info: "ℹ️", warning: "⚠️" };
 
-  /* ─── Page titles ─── */
+  /* âââ Page titles âââ */
   const pageTitle = {
     Dashboard:  "Dashboard",
     Leads:      "Lead Finder",
@@ -400,7 +407,7 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      {/* ── Sidebar ── */}
+      {/* ââ Sidebar ââ */}
       <aside className={`sidebar ${sidebarCollapsed ? "collapsed" : ""}`}>
         {/* Logo */}
         <div className="sidebar-logo">
@@ -444,12 +451,12 @@ export default function App() {
             onClick={() => setSidebarCollapsed(v => !v)}
             title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
           >
-            {sidebarCollapsed ? "→" : "←"}
+            {sidebarCollapsed ? "â" : "â"}
           </button>
         </div>
       </aside>
 
-      {/* ── Main area ── */}
+      {/* ââ Main area ââ */}
       <div className="main-area">
         {/* Topbar */}
         <header className="topbar">
@@ -495,7 +502,7 @@ export default function App() {
                 className="hover-bg-light"
                 title="Notifications"
               >
-                🔔
+                ðŸ
                 {notifications.filter(n => !n.is_read).length > 0 && (
                   <span style={{ 
                     position: "absolute", 
@@ -641,7 +648,7 @@ export default function App() {
                                 }}
                                 title="Delete"
                               >
-                                ✕
+                                â
                               </button>
                             </div>
                           </div>
@@ -710,24 +717,25 @@ export default function App() {
         </main>
       </div>
 
-      {/* ── Toast stack ── */}
+      {/* ââ Toast stack ââ */}
       <div className="toast-stack">
         {toasts.map(t => (
           <div key={t.id} className={`toast toast-${t.type}`}>
-            <span>{toastIcon[t.type] || "ℹ"}</span>
+            <span>{toastIcon[t.type] || "â¹"}</span>
             <span style={{ flex: 1 }}>{t.message}</span>
             <button
               onClick={() => setToasts(prev => prev.filter(x => x.id !== t.id))}
               style={{ opacity: 0.6, fontSize: 14, padding: "0 4px" }}
-            >✕</button>
+            >â</button>
           </div>
         ))}
       </div>
 
-      {/* ── Global AI Co-pilot Drawer ── */}
+      {/* ââ Global AI Co-pilot Drawer ââ */}
       {currentUser && (
         <Copilot showToast={showToast} onRefreshAll={loadData} />
       )}
     </div>
   );
 }
+

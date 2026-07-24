@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 
 const TABS = [
   { id: "profile",     label: "Profile & Sender" },
-  { id: "email",       label: "Email (Gmail)" },
+  { id: "email",       label: "Email / SMTP" },
   { id: "targeting",   label: "Targeting & Scrape" },
   { id: "pipeline",    label: "Pipeline Stages" },
   { id: "integrations",label: "Integrations" },
@@ -175,11 +175,12 @@ export default function Settings({ settings, onSave, showToast, currentUser }) {
           {/* ── EMAIL ── */}
           {tab === "email" && (
             <div className="card" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-              <div style={{ fontWeight: 700, fontSize: 15, color: "var(--text-1)" }}>Gmail Connection</div>
+              <div style={{ fontWeight: 700, fontSize: 15, color: "var(--text-1)" }}>Email / SMTP Connection</div>
               <div style={{ padding: "10px 12px", background: "var(--info-bg)", border: "1px solid rgba(56,189,248,0.2)", borderRadius: "var(--radius-md)", fontSize: 13, color: "var(--info)" }}>
-                ℹ Use a Gmail{" "}
+                ✉ Connect any email provider — Gmail, Outlook, Yahoo, Zoho, or custom domain.
+                {" "}<strong>Gmail users:</strong> use an{" "}
                 <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer" style={{ color: "var(--brand)", fontWeight: 600 }}>App Password</a>
-                , not your regular Gmail password. 2FA must be enabled.
+                {" "}(2FA must be on). Others: enter your SMTP host below.
               </div>
               {form.gmailUser && (
                 <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", background: "var(--success-bg)", border: "1px solid rgba(34,197,94,0.2)", borderRadius: "var(--radius-md)" }}>
@@ -188,13 +189,52 @@ export default function Settings({ settings, onSave, showToast, currentUser }) {
                 </div>
               )}
               <div className="input-group">
-                <label className="input-label">Gmail Address</label>
-                <input className="input" type="email" value={form.gmailUser || ""} onChange={set("gmailUser")} placeholder="yourname@gmail.com" />
+                <label className="input-label">Email Address</label>
+                <input className="input" type="email" value={form.gmailUser || ""} onChange={set("gmailUser")} placeholder="you@gmail.com / you@yourdomain.com" />
               </div>
               <div className="input-group">
-                <label className="input-label">App Password</label>
-                <input className="input" type="password" value={form.gmailPass || ""} onChange={set("gmailPass")} placeholder="xxxx xxxx xxxx xxxx" />
+                <label className="input-label">Password / App Password</label>
+                <input className="input" type="password" value={form.gmailPass || ""} onChange={set("gmailPass")} placeholder="App password or account password" />
               </div>
+              {/* Show SMTP fields only for non-Gmail addresses */}
+              {form.gmailUser && !form.gmailUser.toLowerCase().endsWith("@gmail.com") && !form.gmailUser.toLowerCase().endsWith("@googlemail.com") && !form.gmailUser.toLowerCase().endsWith("@outlook.com") && !form.gmailUser.toLowerCase().endsWith("@hotmail.com") && !form.gmailUser.toLowerCase().endsWith("@yahoo.com") && !form.gmailUser.toLowerCase().endsWith("@zoho.com") && (
+                <div className="grid-2">
+                  <div className="input-group">
+                    <label className="input-label">SMTP Host</label>
+                    <input className="input" value={form.smtpHost || ""} onChange={set("smtpHost")} placeholder="smtp.yourdomain.com" />
+                  </div>
+                  <div className="input-group">
+                    <label className="input-label">SMTP Port</label>
+                    <input className="input" type="number" value={form.smtpPort || ""} onChange={set("smtpPort")} placeholder="465 or 587" />
+                  </div>
+                </div>
+              )}
+              {/* Also show SMTP for unknown domains manually */}
+              {!form.gmailUser && (
+                <div className="grid-2">
+                  <div className="input-group">
+                    <label className="input-label">SMTP Host <span style={{fontWeight:400,color:"var(--text-4)"}}>(optional, auto-detected)</span></label>
+                    <input className="input" value={form.smtpHost || ""} onChange={set("smtpHost")} placeholder="smtp.yourdomain.com" />
+                  </div>
+                  <div className="input-group">
+                    <label className="input-label">SMTP Port</label>
+                    <input className="input" type="number" value={form.smtpPort || ""} onChange={set("smtpPort")} placeholder="465 or 587" />
+                  </div>
+                </div>
+              )}
+              {/* IMAP fields for custom domain email */}
+              {form.gmailUser && !form.gmailUser.toLowerCase().endsWith("@gmail.com") && !form.gmailUser.toLowerCase().endsWith("@googlemail.com") && !form.gmailUser.toLowerCase().endsWith("@outlook.com") && !form.gmailUser.toLowerCase().endsWith("@hotmail.com") && !form.gmailUser.toLowerCase().endsWith("@yahoo.com") && !form.gmailUser.toLowerCase().endsWith("@zoho.com") && (
+                <div className="grid-2">
+                  <div className="input-group">
+                    <label className="input-label">IMAP Host <span style={{fontSize:11,color:"var(--text-4)"}}>for inbox sync</span></label>
+                    <input className="input" value={form.imapHost || ""} onChange={set("imapHost")} placeholder="mail.privateemail.com" />
+                  </div>
+                  <div className="input-group">
+                    <label className="input-label">IMAP Port</label>
+                    <input className="input" type="number" value={form.imapPort || ""} onChange={set("imapPort")} placeholder="993" />
+                  </div>
+                </div>
+              )}
               <div className="input-group" style={{ opacity: 0.55, pointerEvents: "none" }}>
                 <label className="input-label">AI Engine</label>
                 <input className="input" value="Antigravity AI (built-in)" readOnly />

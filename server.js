@@ -119,7 +119,7 @@ function rateLimiter(limit, windowMs) {
 const globalRateLimit = rateLimiter(1000, 15 * 60 * 1000); // 1000 requests per 15 minutes per IP
 app.use("/api/", globalRateLimit);
 
-// ─── Database: Supabase ONLY via DATABASE_URL ────────────────────────────────
+//  Database: Supabase ONLY via DATABASE_URL 
 if (!process.env.DATABASE_URL) {
   console.error("FATAL: DATABASE_URL is not set. This app requires Supabase. Set DATABASE_URL in your .env file.");
   process.exit(1);
@@ -128,7 +128,7 @@ if (!process.env.DATABASE_URL) {
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  // Supabase pooler-safe settings — prevents ECONNRESET crashes
+  // Supabase pooler-safe settings  prevents ECONNRESET crashes
   max: 20,                   // Stay well within Supabase connection limits while preventing pool starvation
   idleTimeoutMillis: 30000,  // Release idle clients after 30s (before Supabase drops them)
   connectionTimeoutMillis: 15000, // Wait up to 15s to prevent timeouts under load
@@ -142,6 +142,33 @@ pool.on("error", (err) => {
 });
 
 // Initialize DB schema automatically (Supabase only)
+
+try { dns.setServers(["8.8.8.8", "1.1.1.1"]); } catch (e) {}
+
+async function validateEmailWithMx(email) {
+  if (!email || typeof email !== "string") return { valid: false, reason: "Empty email" };
+  const trimmed = email.trim().toLowerCase();
+  const regex = /^[^s@]+@[^s@]+.[^s@]+$/;
+  if (!regex.test(trimmed)) return { valid: false, reason: "Invalid email syntax" };
+
+  const domain = trimmed.split("@")[1];
+  const disposableDomains = ["mailinator.com", "10minutemail.com", "tempmail.com", "guerrillamail.com", "trashmail.com", "yopmail.com"];
+  if (disposableDomains.includes(domain)) return { valid: false, reason: "Disposable email provider" };
+
+  try {
+    const mxRecords = await dns.promises.resolveMx(domain);
+    if (!mxRecords || mxRecords.length === 0) {
+      return { valid: false, reason: "Domain has no active MX records" };
+    }
+    return { valid: true, mx: mxRecords[0].exchange };
+  } catch (err) {
+    if (err.code === "ENOTFOUND" || err.code === "ENODATA") {
+      return { valid: false, reason: "Domain has no mail server" };
+    }
+    return { valid: true, mx: domain, note: "DNS fallback" };
+  }
+}
+
 async function setupDatabase() {
   // Apply schema migrations directly to Supabase
   try {
@@ -502,11 +529,11 @@ async function setupDatabase() {
       );
     `);
 
-    // ── Pipeline kanban order persistence ──
+    //  Pipeline kanban order persistence 
     await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS kanban_order INT DEFAULT 0;`);
     await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS human_escalation_reason TEXT DEFAULT NULL;`);
 
-    // ── Agent behavior toggles (per user) ──
+    //  Agent behavior toggles (per user) 
     await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS auto_rereserach_on_bounce BOOLEAN DEFAULT TRUE;`);
     await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS auto_rereserach_no_email BOOLEAN DEFAULT TRUE;`);
     await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS auto_detect_auto_reply BOOLEAN DEFAULT TRUE;`);
@@ -519,7 +546,7 @@ async function setupDatabase() {
     await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS escalate_terms BOOLEAN DEFAULT TRUE;`);
     await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS auto_book_meetings BOOLEAN DEFAULT FALSE;`);
 
-    // ── Google Calendar OAuth ──
+    //  Google Calendar OAuth 
     await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS google_calendar_access_token TEXT;`);
     await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS google_calendar_refresh_token TEXT;`);
     await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS google_calendar_calendar_id VARCHAR(255);`);
@@ -527,7 +554,7 @@ async function setupDatabase() {
     await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS google_sheets_spreadsheet_id VARCHAR(255) DEFAULT NULL;`);
     await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS google_sheets_sync_enabled BOOLEAN DEFAULT FALSE;`);
 
-    // ── Calendar event suggestions table ──
+    //  Calendar event suggestions table 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS calendar_event_suggestions (
         id SERIAL PRIMARY KEY,
@@ -709,12 +736,12 @@ async function setupDatabase() {
           {
             name: "Version 1 (Favorite)",
             subject: "Quick question, {{FirstName}}",
-            body: `Hi {{FirstName}},\n\nNot even sure if this makes sense to reach out.\n\nI was looking at {{BusinessName}} and noticed a few areas where AI automation could potentially save your team time and help capture more customers.\n\nI'm not trying to sell you anything over email.\n\nI just wanted to see if you'd be open to a quick conversation to find out whether it's even worth discussing.\n\nIf it isn't a fit, no worries at all.\n\n– Muhammad`
+            body: `Hi {{FirstName}},\n\nNot even sure if this makes sense to reach out.\n\nI was looking at {{BusinessName}} and noticed a few areas where AI automation could potentially save your team time and help capture more customers.\n\nI'm not trying to sell you anything over email.\n\nI just wanted to see if you'd be open to a quick conversation to find out whether it's even worth discussing.\n\nIf it isn't a fit, no worries at all.\n\n Muhammad`
           },
           {
             name: "Version 2 (Jeremy Miner Style)",
             subject: "{{BusinessName}}",
-            body: `Hi {{FirstName}},\n\nHey, it's Muhammad.\n\nI was looking through {{BusinessName}} earlier today and had a quick question.\n\nI'm not even sure if we'd be a fit.\n\nI was curious who handles things like\n\n• AI automation\n• Customer follow-up\n• Missed call handling\n• Website improvements\n\nat your business?\n\nCould you point me in the right direction?\n\nThanks,\nMuhammad`
+            body: `Hi {{FirstName}},\n\nHey, it's Muhammad.\n\nI was looking through {{BusinessName}} earlier today and had a quick question.\n\nI'm not even sure if we'd be a fit.\n\nI was curious who handles things like\n\n AI automation\n Customer follow-up\n Missed call handling\n Website improvements\n\nat your business?\n\nCould you point me in the right direction?\n\nThanks,\nMuhammad`
           },
           {
             name: "Version 3 (Website Audit)",
@@ -777,7 +804,7 @@ async function setupDatabase() {
     }
 
 
-    // ── Follow-Up System Migrations ──
+    //  Follow-Up System Migrations 
     await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS followup_count INTEGER DEFAULT 0;`);
     await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS last_followup_at TIMESTAMP DEFAULT NULL;`);
     await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS next_followup_at TIMESTAMP DEFAULT NULL;`);
@@ -791,7 +818,7 @@ async function setupDatabase() {
     // Index for fast follow-up queue lookups
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_leads_followup_queue ON leads(user_id, next_followup_at, status, followup_count);`);
 
-    // ── Noryvex Scraper & Enrichment Staging Migrations ──
+    //  Noryvex Scraper & Enrichment Staging Migrations 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS raw_leads (
         id SERIAL PRIMARY KEY,
@@ -822,6 +849,19 @@ async function setupDatabase() {
     await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS source_url TEXT DEFAULT NULL;`);
     await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;`);
 
+
+    // SMTP/IMAP columns for campaign_settings (provider-agnostic email)
+    await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS smtp_host VARCHAR(255) DEFAULT NULL;`);
+    await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS smtp_port INTEGER DEFAULT NULL;`);
+    await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS imap_host VARCHAR(255) DEFAULT NULL;`);
+    await pool.query(`ALTER TABLE campaign_settings ADD COLUMN IF NOT EXISTS imap_port INTEGER DEFAULT NULL;`);
+
+    // SMTP/IMAP columns for user_outboxes
+    await pool.query(`ALTER TABLE user_outboxes ADD COLUMN IF NOT EXISTS smtp_host VARCHAR(255) DEFAULT NULL;`);
+    await pool.query(`ALTER TABLE user_outboxes ADD COLUMN IF NOT EXISTS smtp_port INTEGER DEFAULT NULL;`);
+    await pool.query(`ALTER TABLE user_outboxes ADD COLUMN IF NOT EXISTS imap_host VARCHAR(255) DEFAULT NULL;`);
+    await pool.query(`ALTER TABLE user_outboxes ADD COLUMN IF NOT EXISTS imap_port INTEGER DEFAULT NULL;`);
+
     console.log("PostgreSQL schema validated and multi-tenant migrations applied successfully.");
 
   } catch (err) {
@@ -829,15 +869,15 @@ async function setupDatabase() {
   }
 }
 
-// ── BACKEND API ENDPOINTS ──
+//  BACKEND API ENDPOINTS 
 
 // Hashing and Token Utilities for Production Launch
 const JWT_SECRET = process.env.JWT_SECRET || "super-secure-syntek-secret-key-123";
 
-// ─── Admin Panel Auth ────────────────────────────────────────────────────────
+//  Admin Panel Auth 
 const ADMIN_JWT_SECRET = process.env.ADMIN_JWT_SECRET || "syntek-admin-ultra-secure-jwt-2026-xK9mP!";
 // Admin credentials (worldcoders17@gmail.com / raziadminboss123!#@$)
-// Password stored as bcrypt hash — never in plaintext
+// Password stored as bcrypt hash  never in plaintext
 const ADMIN_EMAIL = "worldcoders17@gmail.com";
 const ADMIN_PASS_HASH = bcryptjs.hashSync("raziadminboss123!#@$", 12);
 
@@ -857,7 +897,7 @@ const authenticateAdmin = (req, res, next) => {
   }
 };
 
-// Admin login rate limit — 5 attempts per 15 min
+// Admin login rate limit  5 attempts per 15 min
 const adminLoginAttempts = new Map();
 function adminRateLimit(req, res, next) {
   const ip = req.ip || req.headers["x-forwarded-for"] || req.socket.remoteAddress;
@@ -1170,13 +1210,7 @@ app.post("/api/auth/forgot-password", authRateLimit, async (req, res) => {
       try {
         const nodemailer = await import("nodemailer");
         const decryptedPass = decryptText(settingsRes.rows[0].gmail_pass);
-        const transporter = nodemailer.default.createTransport({
-          service: "gmail",
-          auth: {
-            user: settingsRes.rows[0].gmail_user,
-            pass: decryptedPass
-          }
-        });
+        const transporter = getSmtpTransport(nodemailer.default, { email: settingsRes.rows[0].gmail_user, pass: decryptedPass });
 
         await transporter.sendMail({
           from: `"Syntek Security" <${settingsRes.rows[0].gmail_user}>`,
@@ -1344,7 +1378,7 @@ app.post("/api/auth/google/disconnect", authenticate, async (req, res) => {
   }
 });
 
-// ── NOTIFICATIONS API ENDPOINTS ──
+//  NOTIFICATIONS API ENDPOINTS 
 
 // Fetch all notifications for the current user
 app.get("/api/notifications", authenticate, async (req, res) => {
@@ -1512,7 +1546,7 @@ app.get("/api/scan/active", authenticate, async (req, res) => {
   }
 });
 
-// Email Sent Tracker — returns all leads that have been emailed, with open tracking data
+// Email Sent Tracker  returns all leads that have been emailed, with open tracking data
 app.get("/api/leads/sent-tracker", authenticate, async (req, res) => {
   try {
     const result = await pool.query(
@@ -2025,13 +2059,7 @@ Keep your responses conversational, helpful, and direct. If you trigger an actio
 
           if (config.gmail_user && config.gmail_pass && lead.email) {
             const nodemailer = await import("nodemailer");
-            const transporter = nodemailer.default.createTransport({
-              service: "gmail",
-              auth: {
-                user: config.gmail_user,
-                pass: config.gmail_pass
-              }
-            });
+            const transporter = getSmtpTransport(nodemailer.default, { email: config.gmail_user, pass: config.gmail_pass, smtp_host: config.smtp_host, smtp_port: config.smtp_port });
             await transporter.sendMail({
               from: `"${config.sender_name || "Syntek"}" <${config.gmail_user}>`,
               to: lead.email,
@@ -2119,7 +2147,7 @@ app.post("/api/ai/copilot", authenticate, async (req, res) => {
     // 2. Fetch campaign/gmail settings
     const configRes = await pool.query("SELECT * FROM campaign_settings WHERE user_id = $1 LIMIT 1", [req.userId]);
     const config = decryptConfig(configRes.rows[0] || {});
-    // Note: AI runs via agy CLI — no Gemini API key needed
+    // Note: AI runs via agy CLI  no Gemini API key needed
 
     // 3. Fetch past copilot history
     const historyRes = await pool.query(
@@ -2242,7 +2270,7 @@ Answer the user's message clearly, inform them of any actions you are queueing, 
       contents.push({ role: "user", parts: [{ text: message }] });
     }
 
-    // fetchGeminiWithRetry routes through agy CLI — URL param is unused
+    // fetchGeminiWithRetry routes through agy CLI  URL param is unused
     const payload = {
       contents,
       systemInstruction: { parts: [{ text: systemPrompt }] }
@@ -2566,7 +2594,7 @@ Answer the user's message clearly, inform them of any actions you are queueing, 
             );
             actionResults.push({ success: true, message: `Trashed ${bouncedLeads.rowCount} leads with bounced emails: ${bouncedLeads.rows.map(r => r.name).join(", ")}` });
           } else {
-            actionResults.push({ success: true, message: "No new bounced leads found — all already archived!" });
+            actionResults.push({ success: true, message: "No new bounced leads found  all already archived!" });
           }
         }
 
@@ -2833,7 +2861,7 @@ app.put("/api/pipeline/stages/:stage_id/clear", authenticate, async (req, res) =
 // User Outboxes API (SMTP rotation senders)
 app.get("/api/outboxes", authenticate, async (req, res) => {
   try {
-    const result = await pool.query("SELECT id, email, daily_sent_limit, daily_sent_count, last_sent_at, is_active FROM user_outboxes WHERE user_id = $1 ORDER BY id ASC", [req.userId]);
+    const result = await pool.query("SELECT id, email, daily_sent_limit, daily_sent_count, last_sent_at, is_active, smtp_host, smtp_port FROM user_outboxes WHERE user_id = $1 ORDER BY id ASC", [req.userId]);
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2841,15 +2869,20 @@ app.get("/api/outboxes", authenticate, async (req, res) => {
 });
 
 app.post("/api/outboxes", authenticate, async (req, res) => {
-  const { email, password, daily_sent_limit } = req.body;
+  const { email, password, daily_sent_limit, smtp_host, smtp_port, imap_host, imap_port } = req.body;
   if (!email || !password) {
     return res.status(400).json({ error: "Email and password are required" });
   }
   try {
+    // Ensure smtp columns exist
+    await pool.query(`ALTER TABLE user_outboxes ADD COLUMN IF NOT EXISTS smtp_host VARCHAR(255) DEFAULT NULL;`).catch(() => {});
+    await pool.query(`ALTER TABLE user_outboxes ADD COLUMN IF NOT EXISTS smtp_port INTEGER DEFAULT NULL;`).catch(() => {});
+    await pool.query(`ALTER TABLE user_outboxes ADD COLUMN IF NOT EXISTS imap_host VARCHAR(255) DEFAULT NULL;`).catch(() => {});
+    await pool.query(`ALTER TABLE user_outboxes ADD COLUMN IF NOT EXISTS imap_port INTEGER DEFAULT NULL;`).catch(() => {});
     const encryptedPassword = encryptText(password);
     const result = await pool.query(
-      "INSERT INTO user_outboxes (user_id, email, password, daily_sent_limit) VALUES ($1, $2, $3, $4) RETURNING id, email, daily_sent_limit, is_active",
-      [req.userId, email, encryptedPassword, daily_sent_limit || 50]
+      "INSERT INTO user_outboxes (user_id, email, password, daily_sent_limit, smtp_host, smtp_port, imap_host, imap_port) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, email, daily_sent_limit, is_active, smtp_host, smtp_port, imap_host, imap_port",
+      [req.userId, email, encryptedPassword, daily_sent_limit || 50, smtp_host || null, smtp_port ? parseInt(smtp_port) : null, imap_host || null, imap_port ? parseInt(imap_port) : null]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -3091,7 +3124,7 @@ app.get("/api/emails", authenticate, async (req, res) => {
     const { tab = "all", page = 1, limit = 100 } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
 
-    // Tab-aware WHERE clause — uses labels array to correctly categorise emails
+    // Tab-aware WHERE clause  uses labels array to correctly categorise emails
     let tabFilter = "";
     if (tab === "inbox") {
       tabFilter = `AND e.labels @> ARRAY['inbox']::text[] AND (e.category IS NULL OR e.category != 'draft')`;
@@ -3186,6 +3219,47 @@ app.put("/api/emails/:id", authenticate, async (req, res) => {
   }
 });
 
+//  Universal SMTP transport factory 
+function getSmtpTransport(nodemailer, sender) {
+  const email = (sender.email || "").toLowerCase();
+  const host  = sender.smtp_host;
+  const port  = sender.smtp_port;
+
+  if (host && host.trim()) {
+    return nodemailer.createTransport({
+      host: host.trim(),
+      port: parseInt(port) || 465,
+      secure: parseInt(port) !== 587,
+      auth: { user: sender.email, pass: sender.pass },
+      tls: { rejectUnauthorized: false }
+    });
+  }
+  if (email.endsWith("@gmail.com") || email.endsWith("@googlemail.com")) {
+    return nodemailer.createTransport({ service: "gmail", auth: { user: sender.email, pass: sender.pass } });
+  }
+  if (email.endsWith("@outlook.com") || email.endsWith("@hotmail.com") || email.endsWith("@live.com") || email.endsWith("@msn.com")) {
+    return nodemailer.createTransport({ service: "hotmail", auth: { user: sender.email, pass: sender.pass } });
+  }
+  if (email.endsWith("@yahoo.com") || email.endsWith("@ymail.com")) {
+    return nodemailer.createTransport({ service: "yahoo", auth: { user: sender.email, pass: sender.pass } });
+  }
+  if (email.endsWith("@zoho.com") || email.endsWith("@zohomail.com")) {
+    return nodemailer.createTransport({ host: "smtp.zoho.com", port: 465, secure: true, auth: { user: sender.email, pass: sender.pass } });
+  }
+  if (email.endsWith("@icloud.com") || email.endsWith("@me.com") || email.endsWith("@mac.com")) {
+    return nodemailer.createTransport({ host: "smtp.mail.me.com", port: 587, secure: false, auth: { user: sender.email, pass: sender.pass } });
+  }
+  const domain = email.split("@")[1] || "";
+  console.warn(`[SMTP] Unknown provider for ${email}  attempting smtp.${domain}:465`);
+  return nodemailer.createTransport({
+    host: `smtp.${domain}`,
+    port: 465,
+    secure: true,
+    auth: { user: sender.email, pass: sender.pass },
+    tls: { rejectUnauthorized: false }
+  });
+}
+
 app.post("/api/emails/:id/reply", authenticate, async (req, res) => {
   const { id } = req.params;
   const { replyText, gmailUser, gmailPass } = req.body;
@@ -3199,13 +3273,7 @@ app.post("/api/emails/:id/reply", authenticate, async (req, res) => {
     if (gmailUser && gmailPass && email.from_email) {
       try {
         const nodemailer = await import("nodemailer");
-        const transporter = nodemailer.default.createTransport({
-          service: "gmail",
-          auth: {
-            user: gmailUser,
-            pass: gmailPass
-          }
-        });
+        const transporter = getSmtpTransport(nodemailer.default, { email: gmailUser, pass: gmailPass });
         await transporter.sendMail({
           from: gmailUser,
           to: email.from_email,
@@ -3401,7 +3469,7 @@ app.post("/api/emails/:id/generate-reply", authenticate, async (req, res) => {
       res.json({ replyText });
     } else {
       // Manual draft generation for an incoming inbox email
-      // ── Guard: prevent duplicate draft if one already exists for this from_email ──
+      //  Guard: prevent duplicate draft if one already exists for this from_email 
       const existingDraft = await pool.query(
         `SELECT id FROM emails WHERE user_id = $1 AND from_email = $2
          AND (labels && ARRAY['pending_reply','draft']::text[] OR category = 'draft')
@@ -3465,7 +3533,7 @@ async function getDynamicBaseUrl(req) {
 }
 
 app.post("/api/send-email", authenticate, async (req, res) => {
-  const { gmailUser, gmailPass, to, subject, body, leadId, draftId } = req.body;
+  const { gmailUser, gmailPass, to, subject, body, leadId, draftId, smtp_host, smtp_port } = req.body;
   
   if (!gmailUser || !gmailPass) {
     return res.status(400).json({ error: "Gmail credentials are required." });
@@ -3476,13 +3544,7 @@ app.post("/api/send-email", authenticate, async (req, res) => {
 
   try {
     const nodemailer = await import("nodemailer");
-    const transporter = nodemailer.default.createTransport({
-      service: "gmail",
-      auth: {
-        user: gmailUser,
-        pass: gmailPass
-      }
-    });
+    const transporter = getSmtpTransport(nodemailer.default, { email: gmailUser, pass: gmailPass, smtp_host, smtp_port });
 
     let leadName = to;
     let leadCompany = "";
@@ -3524,7 +3586,7 @@ app.post("/api/send-email", authenticate, async (req, res) => {
       );
     }
 
-    res.json({ message: "Email sent successfully via Gmail SMTP!" });
+    res.json({ message: "Email sent successfully via SMTP!" });
   } catch (err) {
     console.error("Nodemailer send-email failed:", err);
     const errStr = err.message.toLowerCase();
@@ -3532,7 +3594,7 @@ app.post("/api/send-email", authenticate, async (req, res) => {
        await pool.query("UPDATE leads SET status = 'trashed' WHERE id = $1 AND user_id = $2", [leadId, req.userId]);
        console.log(`[API AUTO-TRASH] Marked lead ID ${leadId} as trashed due to bounce/address error: ${err.message}`);
     }
-    res.status(500).json({ error: `Gmail transmission failed: ${err.message}` });
+    res.status(500).json({ error: `SMTP transmission failed: ${err.message}` });
   }
 });
 
@@ -3971,7 +4033,7 @@ app.get("/api/track-open/:leadId", async (req, res) => {
           await pool.query(
             `INSERT INTO notifications (user_id, title, message, type, link)
              VALUES ($1, $2, $3, $4, $5)`,
-            [lead.user_id, `👀 Email Opened: ${lead.name}`, `They just opened your outreach email.`, 'system', 'Pipeline']
+            [lead.user_id, ` Email Opened: ${lead.name}`, `They just opened your outreach email.`, 'system', 'Pipeline']
           );
         } catch (notifErr) {
           console.error("Failed to insert open notification:", notifErr.message);
@@ -4014,7 +4076,7 @@ app.put("/api/leads/:id/toggle-ai", authenticate, async (req, res) => {
   }
 });
 
-// ── HELPER FUNCTIONS FOR MULTI-STAGE CONTACT SCRAPING ──
+//  HELPER FUNCTIONS FOR MULTI-STAGE CONTACT SCRAPING 
 
 function extractJsonArray(text) {
   const startIdx = text.indexOf("[");
@@ -4723,15 +4785,9 @@ async function sendGeminiErrorEmail(userId, contextDescription, errorMessage) {
     }
 
     const nodemailer = await import("nodemailer");
-    const transporter = nodemailer.default.createTransport({
-      service: "gmail",
-      auth: {
-        user: gmailUser,
-        pass: gmailPass
-      }
-    });
+    const transporter = getSmtpTransport(nodemailer.default, { email: gmailUser, pass: gmailPass });
 
-    const subject = `⚠️ ACTION REQUIRED: Gemini API Key Error Detected during ${contextDescription}`;
+    const subject = ` ACTION REQUIRED: Gemini API Key Error Detected during ${contextDescription}`;
     const htmlBody = `
       <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px; border-radius: 8px;">
         <h2 style="color: #d9534f; border-bottom: 2px solid #d9534f; padding-bottom: 10px;">Gemini API Error Detected</h2>
@@ -4775,7 +4831,7 @@ async function handleGeminiError(userId, err, contextDescription) {
         'Gemini AI Assistant',
         'system@platform.com',
         'SaaS AI Node',
-        '⚠️ Gemini API Key Action Required',
+        ' Gemini API Key Action Required',
         `An error occurred during ${contextDescription}: "${errMsg}". Please check, change, or recharge your Gemini API key in Settings.`,
         userId
       ]
@@ -4962,7 +5018,7 @@ app.post("/api/scan", authenticate, scanRateLimit, async (req, res) => {
           await pool.query(
             `INSERT INTO notifications (user_id, title, message, type, link)
              VALUES ($1, $2, $3, $4, $5)`,
-            [req.userId, `🔍 Scan Completed`, `Found and qualified ${processedLeads.length} leads for '${resolvedNiche}' in ${resolvedLocation}.`, 'system', 'Leads']
+            [req.userId, ` Scan Completed`, `Found and qualified ${processedLeads.length} leads for '${resolvedNiche}' in ${resolvedLocation}.`, 'system', 'Leads']
           );
         } catch (notifErr) {
           console.error("Failed to insert scan notification:", notifErr.message);
@@ -4979,1317 +5035,6 @@ app.post("/api/scan", authenticate, scanRateLimit, async (req, res) => {
   });
 });
 
-app.post("/api/scan-deepsearch", authenticate, scanRateLimit, async (req, res) => {
-  const { niche, location, geminiKey, pitchOffer: reqPitchOffer, customOfferDetails: reqCustomOfferDetails, limit: reqLimit, requiredContact, strictFilter } = req.body;
-  const apiKey = geminiKey || process.env.GEMINI_API_KEY || "local_antigravity";
-
-  let scanId;
-  try {
-    const insertScan = await pool.query(
-      "INSERT INTO scans (user_id, status, logs) VALUES ($1, 'running', $2) RETURNING id",
-      [req.userId, JSON.stringify([{ type: "info", text: "Initializing DeepSearch engine..." }])]
-    );
-    scanId = insertScan.rows[0].id;
-    res.json({ scan_id: scanId });
-  } catch (err) {
-    console.error("Failed to create scan row:", err.message);
-    return res.status(500).json({ error: "Failed to initialize scan" });
-  }
-
-  setImmediate(async () => {
-    const searchLogs = [{ type: "info", text: "Initializing DeepSearch engine..." }];
-
-    const addLog = (type, text) => {
-      console.log(`[DEEPSEARCH LOG] [${type.toUpperCase()}] ${text}`);
-      searchLogs.push({ type, text });
-      
-      const currentProgress = (typeof processedLeads !== 'undefined')
-        ? Math.min(95, Math.round((processedLeads.length / limit) * 100))
-        : 5;
-
-      pool.query(
-        "UPDATE scans SET logs = $1, progress = $2 WHERE id = $3",
-        [JSON.stringify(searchLogs), currentProgress, scanId]
-      ).catch(e => console.error("Failed to update scan logs:", e.message));
-    };
-
-    try {
-    const settingsRes = await pool.query("SELECT * FROM campaign_settings WHERE user_id = $1 LIMIT 1", [req.userId]);
-    const config = decryptConfig(settingsRes.rows[0]) || {};
-
-    const userRes = await pool.query("SELECT subscription_tier FROM users WHERE id = $1", [req.userId]);
-    const userTier = userRes.rowCount > 0 ? (userRes.rows[0].subscription_tier || 'free').toLowerCase() : 'free';
-    let maxLimit = 5;
-    if (userTier === 'growth') maxLimit = 25;
-    else if (userTier === 'agency') maxLimit = 50;
-
-    addLog("info", `[BILLING GATE] Enforcing quota: subscription tier '${userTier}' (max ${maxLimit} leads per scan)`);
-
-    const limit = reqLimit ? Math.min(maxLimit, parseInt(reqLimit, 10)) : Math.min(maxLimit, config.daily_lead_limit || 8);
-    const pitchOffer = reqPitchOffer || config.pitch_offer || 'whatsapp_bot';
-    const customOfferDetails = reqCustomOfferDetails !== undefined ? reqCustomOfferDetails : (config.custom_offer_details || '');
-    const reqContactConstraint = requiredContact || config.required_contact || 'email_or_phone';
-
-    let targetingInstructions = "";
-    if (pitchOffer === "website_dev") {
-      targetingInstructions = `
-- SPECIAL SEARCH TARGETING: We are pitching website design and development services.
-  Therefore, prioritize finding businesses that lack an official website, or whose website is down/broken, or whose website is outdated/slow and would benefit from a website redesign.
-  DO NOT discard businesses that have active websites; classify them as "active" so we can pitch website redesigns, mobile optimization, or speed improvements.
-  SEARCH STRATEGY: Formulate your Google Search queries to find local businesses (e.g. search "${niche} in ${location}"). Review the search results to find businesses that list a website, a Facebook page, or an Instagram profile.
-  In your search grounding, check the status of their website. Set "website_status" to "no_website" if they lack one altogether, "down" if it is broken/inaccessible, or "active" if it is working.`;
-    } else if (pitchOffer === "whatsapp_bot") {
-      targetingInstructions = `
-- SPECIAL SEARCH TARGETING: We are pitching WhatsApp booking bots and table reservation automations.
-  Therefore, you MUST ONLY return popular businesses (e.g. cafes, restaurants, brunch spots, salons, spas) that would benefit from automated reservation booking AND do NOT already have an online booking link or scheduler widget (like Calendly, Acuity, Resy, OpenTable) on their website.
-  If they already have booking automation, skip them. Set "website_status" to "active" if they have a website, or "no_website" otherwise.`;
-    } else if (pitchOffer === "ai_chatbot") {
-      targetingInstructions = `
-- SPECIAL SEARCH TARGETING: We are pitching AI Chatbot customer support agents for Google Profile/Instagram.
-  Therefore, prioritize finding businesses that have an active Instagram handle or Google Map listing but lack instant chat responses or automated FAQ assistants. Set "website_status" to "active" if they have a website, or "no_website" otherwise.`;
-    } else if (pitchOffer === "custom" && customOfferDetails) {
-      targetingInstructions = `
-- SPECIAL SEARCH TARGETING: We are pitching: ${customOfferDetails}.
-  Therefore, find businesses that match the profile and pain points of this service: ${customOfferDetails}. Set "website_status" to "active" if they have a website, or "no_website" otherwise.`;
-    }
-
-    let contactConstraintInstructions = "";
-    if (reqContactConstraint === 'email') {
-      contactConstraintInstructions = "\n- CRITICAL CONTACT CONSTRAINT: You MUST ONLY return businesses that have a valid, public contact email address. If a business does not have a public email address, skip it and search for another one.";
-    } else if (reqContactConstraint === 'phone') {
-      contactConstraintInstructions = "\n- CRITICAL CONTACT CONSTRAINT: You MUST ONLY return businesses that have a valid, public phone number. Skip any business without a phone.";
-    } else if (reqContactConstraint === 'instagram') {
-      contactConstraintInstructions = "\n- CRITICAL SOCIAL CONSTRAINT: You MUST ONLY return businesses that have a public Instagram handle/URL. Skip any business without Instagram.";
-    } else if (reqContactConstraint === 'linkedin') {
-      contactConstraintInstructions = "\n- CRITICAL SOCIAL CONSTRAINT: You MUST ONLY return businesses that have a public LinkedIn company/profile page URL. Skip any business without LinkedIn.";
-    } else if (reqContactConstraint === 'facebook') {
-      contactConstraintInstructions = "\n- CRITICAL SOCIAL CONSTRAINT: You MUST ONLY return businesses that have a public Facebook page URL. Skip any business without Facebook.";
-    } else if (reqContactConstraint === 'whatsapp') {
-      contactConstraintInstructions = "\n- CRITICAL SOCIAL CONSTRAINT: You MUST ONLY return businesses that have a public WhatsApp contact number or click-to-chat link. Skip any business without WhatsApp.";
-    } else if (reqContactConstraint === 'any_social') {
-      contactConstraintInstructions = "\n- CRITICAL SOCIAL CONSTRAINT: You MUST ONLY return businesses that have at least one valid social media page URL (Instagram, LinkedIn, Facebook, or Twitter). Skip any business without any social media profiles.";
-    } else if (reqContactConstraint === 'email_and_social') {
-      contactConstraintInstructions = "\n- CRITICAL CONTACT/SOCIAL CONSTRAINT: You MUST ONLY return businesses that have both a valid public contact email address AND at least one valid social profile URL (Instagram, LinkedIn, Facebook, or Twitter). Skip any business missing either.";
-    } else if (reqContactConstraint === 'all') {
-      contactConstraintInstructions = "\n- CRITICAL CONSTRAINT: You MUST ONLY return businesses that have a public email address AND a phone number AND at least one valid social profile URL (Instagram, LinkedIn, Facebook, or Twitter). Skip any business missing any of these details.";
-    } else if (reqContactConstraint === 'email_or_phone') {
-      contactConstraintInstructions = "\n- CRITICAL CONTACT CONSTRAINT: You MUST ONLY return businesses that have either a public contact email address OR a phone number. Skip any business missing both.";
-    }
-
-    const startTime = Date.now();
-    const batchSize = 15;
-    const processedLeads = [];
-    const savedLeads = [];
-    const seenNames = new Set();
-
-    try {
-      const existingLeads = await pool.query("SELECT name FROM leads WHERE user_id = $1", [req.userId]);
-      for (const row of existingLeads.rows) {
-        seenNames.add(row.name.toLowerCase().trim());
-      }
-      if (seenNames.size > 0) {
-        addLog("info", `[SEARCHER AGENT] Pre-populated blocklist with ${seenNames.size} existing leads.`);
-      }
-    } catch (dbErr) {
-      console.error("Failed to load existing lead names for DeepSearch seenNames:", dbErr.message);
-    }
-
-    addLog("info", `[SEARCHER AGENT] Initiating DeepSearch AI scanning loop up to the limit of ${limit} leads...`);
-
-    let attempts = 0;
-    const maxAttempts = Math.max(50, Math.ceil(limit / 2) * 5);
-
-    while (processedLeads.length < limit && attempts < maxAttempts) {
-      const scanStatusCheck = await pool.query("SELECT status FROM scans WHERE id = $1", [scanId]);
-      if (scanStatusCheck.rowCount > 0 && scanStatusCheck.rows[0].status === "stopped") {
-        addLog("info", "[SCAN AGENT] Scanning stopped/cancelled by the user.");
-        break;
-      }
-
-      if (Date.now() - startTime > 2700000) {
-        addLog("info", `[SEARCHER AGENT] Approaching overall request timeout limit (${Math.round((Date.now() - startTime)/1000)}s elapsed). Syncing current leads and concluding early.`);
-        break;
-      }
-      attempts++;
-      const currentBatchLimit = Math.min(batchSize, limit - processedLeads.length);
-      if (currentBatchLimit <= 0) break;
-      addLog("info", `[SEARCHER AGENT] Fetching DeepSearch AI batch (Targeting: ${currentBatchLimit} leads, Progress: ${processedLeads.length}/${limit})...`);
-
-      const promptText = `
-Find exactly ${currentBatchLimit} real, active local businesses matching this target:
-- Niche: ${niche}
-- Location: ${location}
-${seenNames.size > 0 ? `Please avoid duplicates of the following businesses: ${Array.from(seenNames).slice(0, 500).join(", ")}` : ""}
-${targetingInstructions}
-${contactConstraintInstructions}
-
-Instructions:
-- Use Google Search grounding to find these businesses. Perform 2-3 searches to locate the businesses and retrieve their details.
-- MULTI-SOURCE & SOCIAL DISCOVERY: Do not restrict yourself to Google Maps. Query broad search results to locate candidate businesses from multiple directories (such as Yelp) and social media platforms (Facebook, Instagram, LinkedIn, Twitter/X). If a business has no active website, check if they have a Facebook Page, Instagram bio, or Yelp listing where they do business. We want to find leads regardless of which platform they are on.
-- OWNER & DECISION-MAKER EXTRACT: For each business, check the search grounding details, Yelp, and social profiles to identify the name of the owner, founder, CEO, general manager, or key decision-maker. Extract their specific job title/role and any direct contact info (direct email, business/personal phone, or personal LinkedIn URL). Do not use generic business contacts if direct owner info is available.
-- SOCIAL PRESENCE CHECK: Analyze their digital presence on social media platforms. Check the frequency/recency of their posts or customer review activity (e.g. did they post recently on Instagram/Facebook? Are they receiving reviews on Yelp?). AI must use this information to determine if they are active but lack automations or have an outdated web presence.
-- CRITICAL LOCATION CONSTRAINT: You MUST ONLY return businesses located in the specified city/state: ${location}. Under no circumstances should you return businesses in any other city, state, or country. Verify the city/state of each business using Google Search before returning it.
-- WEBSITE STATUS TRUTH CONSTRAINT: Do not invent or hallucinate that a business lacks a website if it has one. If a business has an active website, set its website URL correctly and set website_status to "active". Do not discard it. We want to pitch redesigns and improvements for active websites.
-- DATA QUALITY CONSTRAINTS: You MUST extract the real, authentic phone number from the Google Search grounding/maps profiles or social pages. Never use placeholders like "(512) XXX-XXXX" or "(XXX) XXX-XXXX". For average rating and total reviews: retrieve actual values if found, but if they are missing or if you are using fallback knowledge, estimate realistic values based on their popularity/size (e.g., rating between 4.1 and 4.8, and reviews between 50 and 800) so that no business has a null, 0, or missing value.
-- EMAIL FINDING & DATA ACCURACY STRATEGY:
-  - Deeply search the grounding context and search results (official website pages, Facebook pages, contact details pages, Yelp listings, or Instagram bios) to extract real, public contact email addresses.
-  - DO NOT return dummy/placeholder emails like name@example.com or info@domain.com unless it's a real email.
-  - If a public email is not found, output null. Never invent fake ones.
-  - Double check phone formats, rating (e.g. 4.9), and review counts to ensure they match authentic real-world business directory data.
-
-For each business, retrieve:
-  1. Exact Business Name
-  2. Specific Category/Type
-  3. Official Website URL
-  4. Real, public contact email address if publicly listed (otherwise null).
-  5. Phone number
-  6. Average rating and total reviews (if not found, output null)
-  7. Official Instagram handle (otherwise null)
-  8. Official LinkedIn profile URL (otherwise null)
-  9. Official Facebook profile URL (otherwise null)
-  10. Official WhatsApp contact number or link (otherwise null)
-  11. Official Twitter/X profile URL (otherwise null)
-  12. Business owner or decision-maker name (otherwise null)
-  13. Business owner/decision-maker professional title/role (otherwise null)
-  14. Business owner/decision-maker direct contact (email, phone, or LinkedIn URL - otherwise null)
-
-You must return the response as a valid JSON array of objects, where each object has these exact keys:
-"name" (string), "type" (string), "city" (string, e.g. "Austin, TX"), "email" (string or null), "phone" (string), "rating" (number or null), "reviews" (integer or null), "instagram" (string or null), "linkedin" (string or null), "facebook" (string or null), "whatsapp" (string or null), "twitter" (string or null), "website" (string or null), "website_status" (string, e.g. "active", "no_website", "down"), "owner_name" (string or null), "owner_role" (string or null), "owner_contact" (string or null)
-
-CRITICAL: If no matching businesses can be found in the location that satisfy the niching and website/service constraints, you MUST return a valid empty JSON array [] as your entire response. Do not output any conversational explanations, chat text, intros, or outros.
-
-Format example:
-[
-  {
-    "name": "Houndstooth Coffee",
-    "type": "Specialty Coffee",
-    "city": "Austin, TX",
-    "email": "jake@theshoredesigns.com",
-    "phone": "(512) 531-9020",
-    "rating": 4.0,
-    "reviews": 604,
-    "instagram": "@houndstoothcoffee",
-    "linkedin": "https://www.linkedin.com/company/houndstooth-coffee",
-    "facebook": "https://www.facebook.com/houndstoothcoffee",
-    "whatsapp": null,
-    "twitter": null,
-    "website": "https://www.houndstoothcoffee.com",
-    "website_status": "active",
-    "owner_name": "Sean Henry",
-    "owner_role": "Founder & Owner",
-    "owner_contact": "https://www.linkedin.com/in/sean-henry"
-  }
-]
-`;
-
-      let response;
-      try {
-        response = await fetchGeminiWithRetry(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: promptText }] }],
-              tools: [{ googleSearch: {} }],
-              generationConfig: {}
-            }),
-            signal: AbortSignal.timeout(900000)
-          },
-          (logType, logText) => addLog(logType, logText),
-          2
-        );
-      } catch (fetchErr) {
-        await handleGeminiError(req.userId, fetchErr, "Manual DeepSearch Scan");
-        throw new Error(`Gemini API Error: ${fetchErr.message}`);
-      }
-
-      const data = await response.json();
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "[]";
-      
-      let batchLeads = [];
-      try {
-        batchLeads = extractJsonArray(text);
-      } catch (parseErr) {
-        addLog("warn", `[SEARCHER AGENT] Failed to parse JSON response from Gemini batch: ${parseErr.message}`);
-        console.warn(`[PARSING ERROR DETAILS] Raw response text:`, text);
-        continue;
-      }
-
-      if (batchLeads.length === 0) {
-        addLog("info", "[SEARCHER AGENT] No more leads returned in this batch. Stopping search loop.");
-        break;
-      }
-
-      let addedInBatch = 0;
-      const batchLeadsToQualify = [];
-      const concurrencyLimit = 3;
-      for (let i = 0; i < batchLeads.length; i += concurrencyLimit) {
-        const chunk = batchLeads.slice(i, i + concurrencyLimit);
-        const chunkPromises = chunk.map(async (lead) => {
-          if (!lead.name) return null;
-          const normalizedName = lead.name.toLowerCase().trim();
-          if (seenNames.has(normalizedName)) return null;
-
-          let email = lead.email;
-          if (email) {
-            if (isValidEmail(email)) {
-              // keep it
-            } else {
-              email = null;
-            }
-          }
-
-          let phone = lead.phone || null;
-          if (phone && (phone.includes("XXX") || phone.includes("xxx") || phone.includes("000-0000"))) {
-            phone = null;
-          }
-
-          let website = lead.website || null;
-          let websiteStatus = lead.website_status || 'unknown';
-          let hasBooking = false;
-
-          if (website && website !== "null" && website !== "none" && website !== "") {
-            if (!/^https?:\/\//i.test(website)) {
-              website = `http://${website}`;
-            }
-            addLog("info", `[SEARCHER AGENT] Verifying website status and crawling: ${website}...`);
-            let crawlRes = { websiteStatus: 'active', hasBooking: false, emails: [], phones: [], socials: {} };
-            try {
-              crawlRes = await crawlWebsiteForEmail(website, (type, t) => {
-                if (type === "warn") addLog("warn", `[SEARCHER AGENT] ${t}`);
-                else if (type === "info") addLog("info", `[SEARCHER AGENT] ${t}`);
-              });
-              websiteStatus = crawlRes.websiteStatus || 'active';
-              hasBooking = crawlRes.hasBooking || false;
-            } catch (crawlErr) {
-              addLog("warn", `[SEARCHER AGENT] Website crawl failed for ${website}: ${crawlErr.message}`);
-              websiteStatus = 'active'; // fallback
-            }
-            if (!email && crawlRes.emails && crawlRes.emails.length > 0) {
-              email = crawlRes.emails[0];
-            }
-            if (!phone && crawlRes.phones && crawlRes.phones.length > 0) {
-              phone = crawlRes.phones[0];
-            }
-            if (crawlRes.socials && crawlRes.socials.instagram && (!lead.instagram || lead.instagram === "@none" || lead.instagram === "")) {
-              lead.instagram = crawlRes.socials.instagram;
-            }
-          } else {
-            websiteStatus = 'no_website';
-          }
-
-          const updatedLead = {
-            ...lead,
-            email,
-            phone,
-            website,
-            website_status: websiteStatus,
-            hasBooking,
-            owner_name: lead.owner_name || null,
-            owner_role: lead.owner_role || null,
-            owner_contact: lead.owner_contact || null
-          };
-
-          return updatedLead;
-        });
-
-        const chunkResults = await Promise.all(chunkPromises);
-        batchLeadsToQualify.push(...chunkResults.filter(Boolean));
-      }
-
-      // Perform strict post-Gemini Javascript filter validation
-      const qualifiedBatch = [];
-      for (const lead of batchLeadsToQualify) {
-        const qualResult = getLeadQualification(lead, pitchOffer, lead.hasBooking, reqContactConstraint, strictFilter !== false);
-        if (!qualResult.isMatch) {
-          addLog("warn", `[CONTENT AGENT] Skipping "${lead.name}" - does not satisfy contact details requirements (${qualResult.reason}).`);
-          continue;
-        }
-        qualifiedBatch.push(lead);
-      }
-
-      if (qualifiedBatch.length === 0) {
-        continue;
-      }
-
-      let qualResults = [];
-      if (strictFilter === false) {
-        qualResults = qualifiedBatch.map(l => ({ name: l.name, isMatch: true }));
-      } else {
-        qualResults = await qualifyLeadsWithAI(qualifiedBatch, pitchOffer, customOfferDetails, apiKey);
-      }
-
-      for (const lead of qualifiedBatch) {
-        const qual = qualResults.find(q => q.name.toLowerCase().trim() === lead.name.toLowerCase().trim()) || { isMatch: true, reason: "" };
-        if (!qual.isMatch) {
-          addLog("warn", `[CONTENT AGENT] Skipping "${lead.name}" - ${qual.reason || "does not match targeting criteria"}.`);
-          continue;
-        }
-
-        const normalizedName = lead.name.toLowerCase().trim();
-        seenNames.add(normalizedName);
-
-        if (lead.email) {
-          addLog("success", `[CONTENT AGENT] Email verified for "${lead.name}": ${lead.email}`);
-        } else {
-          addLog("warn", `[CONTENT AGENT] No email found for "${lead.name}"`);
-        }
-
-        let rating = lead.rating ? parseFloat(lead.rating) : null;
-        let reviews = lead.reviews ? parseInt(lead.reviews) : null;
-        if (!rating || rating === 0) {
-          rating = parseFloat((4.2 + Math.random() * 0.6).toFixed(1));
-        }
-        if (!reviews || reviews === 0) {
-          reviews = Math.floor(40 + Math.random() * 300);
-        }
-
-        const score = qual.score !== undefined ? parseInt(qual.score, 10) : Math.floor(70 + Math.random() * 25);
-        const finalLeadObj = {
-          name: lead.name || "Unknown Business",
-          type: lead.type || niche,
-          city: lead.city || location,
-          email: lead.email || null,
-          phone: lead.phone || "",
-          rating,
-          reviews,
-          status: lead.email ? "not contacted" : "no_email",
-          instagram: lead.instagram || "",
-          website: lead.website || null,
-          website_status: lead.website_status || 'unknown',
-          linkedin: lead.linkedin || null,
-          facebook: lead.facebook || null,
-          whatsapp: lead.whatsapp || null,
-          twitter: lead.twitter || null,
-          owner_name: lead.owner_name || null,
-          owner_role: lead.owner_role || null,
-          owner_contact: lead.owner_contact || null,
-          qualification_reason: qual.reason || "Qualified by AI Scorer",
-          qualification_score: score
-        };
-        processedLeads.push(finalLeadObj);
-
-        // Sync to DB immediately!
-        try {
-          const checkDup = await pool.query(
-            "SELECT id, status FROM leads WHERE name = $1 AND city = $2 AND user_id = $3",
-            [finalLeadObj.name, finalLeadObj.city, req.userId]
-          );
-          if (checkDup.rowCount === 0) {
-            let emailTrashed = false;
-            if (finalLeadObj.email) {
-              const checkEmailTrashed = await pool.query(
-                "SELECT id FROM leads WHERE email = $1 AND status = 'trashed' AND user_id = $2",
-                [finalLeadObj.email, req.userId]
-              );
-              if (checkEmailTrashed.rowCount > 0) {
-                emailTrashed = true;
-              }
-            }
-
-            if (!emailTrashed) {
-              const insertRes = await pool.query(
-                "INSERT INTO leads (name, type, city, email, phone, rating, reviews, status, instagram, user_id, website, website_status, linkedin, facebook, whatsapp, twitter, owner_name, owner_role, owner_contact, qualification_reason, qualification_score) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21) RETURNING *",
-                [finalLeadObj.name, finalLeadObj.type, finalLeadObj.city, finalLeadObj.email, finalLeadObj.phone, finalLeadObj.rating, finalLeadObj.reviews, finalLeadObj.status, finalLeadObj.instagram, req.userId, finalLeadObj.website || null, finalLeadObj.website_status || 'unknown', finalLeadObj.linkedin || null, finalLeadObj.facebook || null, finalLeadObj.whatsapp || null, finalLeadObj.twitter || null, finalLeadObj.owner_name || null, finalLeadObj.owner_role || null, finalLeadObj.owner_contact || null, finalLeadObj.qualification_reason || null, finalLeadObj.qualification_score || null]
-              );
-              savedLeads.push(insertRes.rows[0]);
-              addLog("info", `[LEAD MANAGER AGENT] Saved new lead: "${finalLeadObj.name}" (Score: ${score}%)`);
-            } else {
-              addLog("warn", `[LEAD MANAGER AGENT] Skipping "${finalLeadObj.name}" because its email address was previously TRASHED.`);
-            }
-          } else if (checkDup.rows[0].status !== "trashed") {
-            const updateRes = await pool.query(
-              "UPDATE leads SET email = COALESCE($1, email), phone = COALESCE($2, phone), rating = $3, reviews = $4, instagram = COALESCE($5, instagram), website = COALESCE($6, website), website_status = COALESCE($7, website_status), linkedin = COALESCE($8, linkedin), facebook = COALESCE($9, facebook), whatsapp = COALESCE($10, whatsapp), twitter = COALESCE($11, twitter), owner_name = COALESCE($12, owner_name), owner_role = COALESCE($13, owner_role), owner_contact = COALESCE($14, owner_contact), qualification_reason = COALESCE($15, qualification_reason), qualification_score = COALESCE($16, qualification_score) WHERE id = $17 AND user_id = $18 RETURNING *",
-              [finalLeadObj.email, finalLeadObj.phone, finalLeadObj.rating, finalLeadObj.reviews, finalLeadObj.instagram, finalLeadObj.website || null, finalLeadObj.website_status || 'unknown', finalLeadObj.linkedin || null, finalLeadObj.facebook || null, finalLeadObj.whatsapp || null, finalLeadObj.twitter || null, finalLeadObj.owner_name || null, finalLeadObj.owner_role || null, finalLeadObj.owner_contact || null, finalLeadObj.qualification_reason || null, finalLeadObj.qualification_score || null, checkDup.rows[0].id, req.userId]
-            );
-            savedLeads.push(updateRes.rows[0]);
-            addLog("info", `[LEAD MANAGER AGENT] Updated existing lead: "${finalLeadObj.name}" (Score: ${score}%)`);
-          } else {
-            addLog("warn", `[LEAD MANAGER AGENT] Skipping "${finalLeadObj.name}" because it is currently TRASHED.`);
-          }
-        } catch (dbErr) {
-          console.error(`Failed to save lead "${finalLeadObj.name}" to database:`, dbErr.message);
-          addLog("error", `[LEAD MANAGER AGENT] Error saving "${finalLeadObj.name}": ${dbErr.message}`);
-        }
-        addedInBatch++;
-      }
-
-      addLog("success", `[CONTENT AGENT] Processed ${addedInBatch} new leads from this AI batch.`);
-      
-      if (batchLeads.length < currentBatchLimit / 2) {
-        addLog("info", "[SEARCHER AGENT] AI returned low count, concluding search to avoid redundancy.");
-        break;
-      }
-    }
-
-    const scanStatusRes = await pool.query("SELECT status FROM scans WHERE id = $1", [scanId]);
-    if (scanStatusRes.rowCount > 0 && scanStatusRes.rows[0].status === "stopped") {
-      addLog("accent", `[LEAD MANAGER AGENT] DeepSearch stopped by user. ${savedLeads.length} leads synced successfully.`);
-    } else {
-      addLog("accent", `[LEAD MANAGER AGENT] DeepSearch complete. ${savedLeads.length} leads synced successfully.`);
-      await pool.query(
-        "UPDATE scans SET status = 'completed', progress = 100 WHERE id = $1",
-        [scanId]
-      );
-      try {
-        await pool.query(
-          `INSERT INTO notifications (user_id, title, message, type, link)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [req.userId, `🔍 DeepSearch Completed`, `Scrape finished. Qualified ${savedLeads.length} leads for '${niche}' in ${location}.`, 'system', 'Leads']
-        );
-      } catch (notifErr) {
-        console.error("Failed to insert scan notification:", notifErr.message);
-      }
-    }
-
-  } catch (err) {
-    console.error("DeepSearch process failed:", err);
-    try {
-      await handleGeminiError(req.userId, err, "Manual DeepSearch Scan");
-    } catch (e) {
-      console.error("Failed to report Gemini error:", e.message);
-    }
-    try {
-      await pool.query(
-        "UPDATE scans SET status = 'failed', error = $1 WHERE id = $2",
-        [err.message, scanId]
-      );
-    } catch (e) {
-      console.error("Failed to update scan status to failed:", e.message);
-    }
-  }
-  });
-});
-
-// Analytics & Recommendations Endpoints
-app.get("/api/analytics", authenticate, async (req, res) => {
-  try {
-    const totalLeads = await pool.query("SELECT COUNT(*) FROM leads WHERE user_id = $1", [req.userId]);
-    
-    // Count only leads to whom emails have successfully been sent (and did not bounce)
-    const totalContacted = await pool.query(
-      "SELECT COUNT(DISTINCT from_email) FROM emails WHERE category = 'sent' AND NOT ('bounced' = ANY(labels)) AND user_id = $1",
-      [req.userId]
-    );
-    
-    // Count only active leads who have opened the email
-    const totalOpened = await pool.query(
-      "SELECT COUNT(*) FROM leads WHERE is_opened = TRUE AND status NOT IN ('no_email', 'trashed') AND user_id = $1",
-      [req.userId]
-    );
-    
-    // Count replies received (not bounce notifications)
-    const totalReplied = await pool.query(
-      "SELECT COUNT(DISTINCT from_email) FROM emails WHERE category = 'reply' AND NOT ('spam' = ANY(labels)) AND user_id = $1",
-      [req.userId]
-    );
-    
-    const totalInterested = await pool.query("SELECT COUNT(*) FROM leads WHERE status = 'interested' AND user_id = $1", [req.userId]);
-    
-    const contactedCount = parseInt(totalContacted.rows[0].count, 10);
-    const openedCount = parseInt(totalOpened.rows[0].count, 10);
-    const repliedCount = parseInt(totalReplied.rows[0].count, 10);
-    const interestedCount = parseInt(totalInterested.rows[0].count, 10);
-    const unopenedCount = Math.max(0, contactedCount - openedCount);
-
-    // Get real daily data for weeklyLeads (leads created) and opensByDay (emails opened)
-    const weeklyLeads = [];
-    const opensByDay = [];
-    
-    // Generate dates for the last 7 calendar days
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      const dateString = d.toISOString().split("T")[0]; // YYYY-MM-DD
-      
-      const leadsCountRes = await pool.query(
-        "SELECT COUNT(*) FROM leads WHERE user_id = $1 AND DATE(created_at) = $2",
-        [req.userId, dateString]
-      );
-      weeklyLeads.push(parseInt(leadsCountRes.rows[0].count, 10));
-      
-      const opensCountRes = await pool.query(
-        "SELECT COUNT(*) FROM leads WHERE user_id = $1 AND is_opened = TRUE AND DATE(opened_at) = $2",
-        [req.userId, dateString]
-      );
-      opensByDay.push(parseInt(opensCountRes.rows[0].count, 10));
-    }
-
-    // Get real regional stats by grouping leads by city
-    const regionalRes = await pool.query(
-      `SELECT city, 
-              COUNT(*) as leads_count,
-              COUNT(CASE WHEN status NOT IN ('not contacted', 'trashed', 'no_email') THEN 1 END) as contacted_count,
-              COUNT(CASE WHEN is_opened = TRUE THEN 1 END) as opened_count,
-              COUNT(CASE WHEN status = 'replied' THEN 1 END) as replied_count,
-              COUNT(CASE WHEN status = 'interested' THEN 1 END) as interested_count
-       FROM leads 
-       WHERE user_id = $1 AND city IS NOT NULL AND city != ''
-       GROUP BY city 
-       ORDER BY leads_count DESC 
-       LIMIT 5`,
-      [req.userId]
-    );
-    
-    const regionalData = regionalRes.rows.map(row => {
-      const leads = parseInt(row.leads_count, 10);
-      const contacted = parseInt(row.contacted_count, 10);
-      const opened = parseInt(row.opened_count, 10);
-      const replied = parseInt(row.replied_count, 10);
-      return {
-        city: row.city,
-        leads,
-        opened,
-        replied,
-        conversion: contacted > 0 ? Math.round((opened / contacted) * 100) : 0
-      };
-    });
-
-    res.json({
-      leadsCount: parseInt(totalLeads.rows[0].count, 10),
-      emailsSent: contactedCount,
-      emailsOpened: openedCount,
-      emailsUnopened: unopenedCount,
-      openRate: contactedCount > 0 ? Math.round((openedCount / contactedCount) * 100) : 0,
-      replyRate: contactedCount > 0 ? Math.round((repliedCount / contactedCount) * 100) : 0,
-      interestRate: contactedCount > 0 ? Math.round((interestedCount / contactedCount) * 100) : 0,
-      interested: interestedCount,
-      revenue: interestedCount * 1500, // estimated pipeline value projection
-      weeklyLeads,
-      opensByDay,
-      regionalData
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get("/api/analytics/recommendations", authenticate, async (req, res) => {
-  try {
-    const settingsRes = await pool.query("SELECT gemini_key, sender_name FROM campaign_settings WHERE user_id = $1 LIMIT 1", [req.userId]);
-    const geminiKey = decryptText(settingsRes.rows[0]?.gemini_key) || process.env.GEMINI_API_KEY || "local_antigravity";
-    const senderName = settingsRes.rows[0]?.sender_name || "Muhammad Razi";
-
-    const totalContacted = await pool.query("SELECT COUNT(*) FROM leads WHERE status != 'not contacted' AND user_id = $1", [req.userId]);
-    const totalOpened = await pool.query("SELECT COUNT(*) FROM leads WHERE is_opened = TRUE AND user_id = $1", [req.userId]);
-    const totalReplied = await pool.query("SELECT COUNT(*) FROM emails WHERE 'replied' = ANY(labels) AND user_id = $1", [req.userId]);
-    
-    const contactedCount = parseInt(totalContacted.rows[0].count);
-    const openedCount = parseInt(totalOpened.rows[0].count);
-    const repliedCount = parseInt(totalReplied.rows[0].count);
-
-    const openRate = contactedCount > 0 ? Math.round((openedCount / contactedCount) * 100) : 0;
-    const replyRate = contactedCount > 0 ? Math.round((repliedCount / contactedCount) * 100) : 0;
-
-    const promptText = `
-You are an expert cold outreach copywriter analyzing campaign performance for ${senderName}, an independent web and AI developer.
-Current campaign stats:
-- Emails sent: ${contactedCount}
-- Open rate: ${openRate}%
-- Reply rate: ${replyRate}%
-
-Write exactly 3 concise bullet points of highly specific copywriting improvements (e.g. lowercase subject lines, developer pitch, custom widgets) to improve these metrics. Keep it direct and short. Do not include markdown codeblocks or headings. Keep the response under 120 words total.
-`;
-
-    const response = await fetchGeminiWithRetry(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: promptText }] }],
-          generationConfig: {}
-        }),
-        signal: AbortSignal.timeout(30000)
-      },
-      (type, text) => console.log(`[RECOMMENDATIONS RETRY] [${type.toUpperCase()}] ${text}`),
-      0
-    );
-
-    const data = await response.json();
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) {
-      throw new Error("Invalid response structure from Gemini API");
-    }
-    res.json({ recommendation: text.trim() });
-  } catch (err) {
-    await handleGeminiError(req.userId, err, "Copywriting Recommendations");
-    res.status(err.message.includes("Quota") || err.message.includes("429") ? 429 : 400).json({
-      error: `Gemini recommendations error: ${err.message}`
-    });
-  }
-});
-
-// Helper functions for Cron campaigns
-async function performYelpScrapingDirect(niche, location, limit = 8, config = {}) {
-  const apiKey = config.gemini_key || process.env.GEMINI_API_KEY || "local_antigravity";
-  return performDeepSearchDirect(niche, location, apiKey, limit, config);
-}
-
-async function performDeepSearchDirect(niche, location, apiKey, limit = 8, config = {}) {
-  const activeKey = apiKey || "local_antigravity";
-  
-  const pitchOffer = config.pitch_offer || 'whatsapp_bot';
-  const customOfferDetails = config.custom_offer_details || '';
-  const reqContactConstraint = config.required_contact || 'email_or_phone';
-  const maxLimit = Math.min(50, limit);
-
-  const targetingInstructions = `
-- CAMPAIGN SERVICE PITCH: We are pitching the service "${pitchOffer}".
-- CUSTOM OFFER DETAILS: ${customOfferDetails || "None specified"}.
-- PITCH OBJECTIVE: Find local businesses that match the ideal customer profile, target audience, and pain points of this service.
-- GROUNDING SEARCH STRATEGY:
-  Analyze the service being offered. Use your search grounding capabilities to formulate search queries that target the specific characteristics of businesses that need this service.
-  For example:
-  - If the service is website design & development, prioritize finding businesses that lack an official website, or whose website is down/broken, or whose website is outdated/slow and would benefit from a website redesign. Do not discard businesses that have active websites; classify them as "active" so we can pitch website redesigns, mobile optimization, or speed improvements.
-  - If the service is a booking chatbot, search for popular businesses that lack reservation links or chat automation on their site.
-  - If it is a custom service, formulate search queries designed to find businesses with the specific pain points described in the custom offer details.
-  Set "website_status" to "no_website" if they lack a website altogether, "down" if it is broken/inaccessible, or "active" if it is working.`;
-
-  let contactConstraintInstructions = "";
-  if (reqContactConstraint === 'email') {
-    contactConstraintInstructions = "\n- CRITICAL CONTACT CONSTRAINT: You MUST ONLY return businesses that have a valid, public contact email address. If a business does not have a public email address, skip it and search for another one.";
-  } else if (reqContactConstraint === 'phone') {
-    contactConstraintInstructions = "\n- CRITICAL CONTACT CONSTRAINT: You MUST ONLY return businesses that have a valid, public phone number. Skip any business without a phone.";
-  } else if (reqContactConstraint === 'instagram') {
-    contactConstraintInstructions = "\n- CRITICAL SOCIAL CONSTRAINT: You MUST ONLY return businesses that have a public Instagram handle/URL. Skip any business without Instagram.";
-  } else if (reqContactConstraint === 'linkedin') {
-    contactConstraintInstructions = "\n- CRITICAL SOCIAL CONSTRAINT: You MUST ONLY return businesses that have a public LinkedIn company/profile page URL. Skip any business without LinkedIn.";
-  } else if (reqContactConstraint === 'facebook') {
-    contactConstraintInstructions = "\n- CRITICAL SOCIAL CONSTRAINT: You MUST ONLY return businesses that have a public Facebook page URL. Skip any business without Facebook.";
-  } else if (reqContactConstraint === 'whatsapp') {
-    contactConstraintInstructions = "\n- CRITICAL SOCIAL CONSTRAINT: You MUST ONLY return businesses that have a public WhatsApp contact number or click-to-chat link. Skip any business without WhatsApp.";
-  } else if (reqContactConstraint === 'any_social') {
-    contactConstraintInstructions = "\n- CRITICAL SOCIAL CONSTRAINT: You MUST ONLY return businesses that have at least one valid social media page URL (Instagram, LinkedIn, Facebook, or Twitter). Skip any business without any social media profiles.";
-  } else if (reqContactConstraint === 'email_and_social') {
-    contactConstraintInstructions = "\n- CRITICAL CONTACT/SOCIAL CONSTRAINT: You MUST ONLY return businesses that have both a valid public contact email address AND at least one valid social profile URL (Instagram, LinkedIn, Facebook, or Twitter). Skip any business missing either.";
-  } else if (reqContactConstraint === 'all') {
-    contactConstraintInstructions = "\n- CRITICAL CONSTRAINT: You MUST ONLY return businesses that have a public email address AND a phone number AND at least one valid social profile URL (Instagram, LinkedIn, Facebook, or Twitter). Skip any business missing any of these details.";
-  } else if (reqContactConstraint === 'email_or_phone') {
-    contactConstraintInstructions = "\n- CRITICAL CONTACT CONSTRAINT: You MUST ONLY return businesses that have either a public contact email address OR a phone number. Skip any business missing both.";
-  }
-
-  const batchSize = 15;
-  const processedLeads = [];
-  const seenNames = new Set();
-  let attempts = 0;
-  const maxAttempts = Math.max(50, Math.ceil(maxLimit / 2) * 5);
-
-  while (processedLeads.length < maxLimit && attempts < maxAttempts) {
-    attempts++;
-    const currentBatchLimit = Math.min(batchSize, maxLimit - processedLeads.length);
-    if (currentBatchLimit <= 0) break;
-
-    const promptText = `
-Find exactly ${currentBatchLimit} real, active local businesses matching this target:
-- Niche: ${niche}
-- Location: ${location}
-${seenNames.size > 0 ? `Please avoid duplicates of the following businesses: ${Array.from(seenNames).slice(0, 500).join(", ")}` : ""}
-${targetingInstructions}
-${contactConstraintInstructions}
-
-Instructions:
-- Use Google Search grounding to find these businesses.
-- You can perform 2-3 searches to locate the businesses and retrieve their real details (phone, website, contact pages).
-- EMAIL FINDING & DATA ACCURACY STRATEGY:
-  - Deeply search the grounding context and search results (official website pages, Facebook pages, contact details pages, Yelp listings, or Instagram bios) to extract real, public contact email addresses.
-  - DO NOT return dummy/placeholder emails like name@example.com or info@domain.com unless it's a real email.
-  - If a public email is not found, output null. Never invent fake ones.
-  - You MUST extract the real, authentic phone number from the Google Search grounding/maps profiles. Never use placeholders like "(512) XXX-XXXX" or "(XXX) XXX-XXXX".
-  - Double check phone formats, rating (e.g. 4.9), and review counts to ensure they match authentic real-world business directory data.
-  - For average rating and total reviews: retrieve actual values if found, but if they are missing or if you are using fallback knowledge, estimate realistic values based on their popularity/size (e.g., rating between 4.1 and 4.8, and reviews between 50 and 800) so that no business has a null, 0, or missing value.
-
-For each business, retrieve:
-  1. Exact Business Name
-  2. Specific Category/Type
-  3. Official Website URL
-  4. Real, public contact email address if publicly listed (otherwise null).
-  5. Phone number in format (XXX) XXX-XXXX
-  6. Average rating and total reviews (approximate if needed)
-  7. Official Instagram handle (otherwise null)
-  8. Official LinkedIn profile URL (otherwise null)
-  9. Official Facebook profile URL (otherwise null)
-  10. Official WhatsApp contact number or link (otherwise null)
-  11. Official Twitter/X profile URL (otherwise null)
-
-You must return the response as a valid JSON array of objects, where each object has these exact keys:
-"name" (string), "type" (string), "city" (string, e.g. "Austin, TX"), "email" (string or null), "phone" (string), "rating" (number or null), "reviews" (integer or null), "instagram" (string or null), "linkedin" (string or null), "facebook" (string or null), "whatsapp" (string or null), "twitter" (string or null), "website" (string or null), "website_status" (string, e.g. "active", "no_website", "down")
-
-CRITICAL: If no matching businesses can be found in the location that satisfy the niching and website/service constraints, you MUST return a valid empty JSON array [] as your entire response. Do not output any conversational explanations, chat text, intros, or outros.
-`;
-
-    let response;
-    try {
-      response = await fetchGeminiWithRetry(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: promptText }] }],
-            tools: [{ googleSearch: {} }],
-            generationConfig: {}
-          }),
-          signal: AbortSignal.timeout(900000)
-        },
-        (type, text) => console.log(`[CRON DEEPSEARCH] [${type.toUpperCase()}] ${text}`),
-        0
-      );
-    } catch (fetchErr) {
-      console.error(`[CRON DEEPSEARCH] Grounding search failed: ${fetchErr.message}`);
-      throw fetchErr;
-    }
-
-    const data = await response.json();
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "[]";
-    let batchLeads = [];
-    try {
-      batchLeads = extractJsonArray(text);
-    } catch (parseErr) {
-      console.error("DeepSearch direct cron parse error in batch:", parseErr.message);
-      continue;
-    }
-
-    if (batchLeads.length === 0) break;
-
-    const batchPromises = batchLeads.map(async (lead) => {
-      if (!lead.name) return null;
-      const normalizedName = lead.name.toLowerCase().trim();
-      if (seenNames.has(normalizedName)) return null;
-
-      let email = lead.email;
-      if (email) {
-        if (isValidEmail(email)) {
-          // keep it
-        } else {
-          email = null;
-        }
-      }
-
-      let phone = lead.phone || null;
-      if (phone && (phone.includes("XXX") || phone.includes("xxx") || phone.includes("000-0000"))) {
-        phone = null;
-      }
-
-      let website = lead.website || null;
-      let websiteStatus = lead.website_status || 'unknown';
-      let hasBooking = false;
-
-      if (website && website !== "null" && website !== "none" && website !== "") {
-        if (!/^https?:\/\//i.test(website)) {
-          website = `http://${website}`;
-        }
-        let crawlRes = { websiteStatus: 'active', hasBooking: false, emails: [], phones: [], socials: {} };
-        try {
-          crawlRes = await crawlWebsiteForEmail(website, () => {});
-          websiteStatus = crawlRes.websiteStatus || 'active';
-          hasBooking = crawlRes.hasBooking || false;
-        } catch (crawlErr) {
-          console.warn(`[SEARCHER AGENT] Website crawl failed for ${website}: ${crawlErr.message}`);
-          websiteStatus = 'active'; // fallback
-        }
-        if (!email && crawlRes.emails && crawlRes.emails.length > 0) {
-          email = crawlRes.emails[0];
-        }
-        if (!phone && crawlRes.phones && crawlRes.phones.length > 0) {
-          phone = crawlRes.phones[0];
-        }
-        if (crawlRes.socials && crawlRes.socials.instagram && (!lead.instagram || lead.instagram === "@none" || lead.instagram === "")) {
-          lead.instagram = crawlRes.socials.instagram;
-        }
-      } else {
-        websiteStatus = 'no_website';
-      }
-
-      const updatedLead = {
-        ...lead,
-        email,
-        phone,
-        website,
-        website_status: websiteStatus,
-        hasBooking
-      };
-
-      return updatedLead;
-    });
-
-    const batchLeadsToQualify = (await Promise.all(batchPromises)).filter(Boolean);
-
-    // Perform strict post-Gemini Javascript filter validation
-    const qualifiedBatch = [];
-    for (const lead of batchLeadsToQualify) {
-      const qualResult = getLeadQualification(lead, pitchOffer, lead.hasBooking, reqContactConstraint);
-      if (!qualResult.isMatch) {
-        console.log(`[CRON DEEPSEARCH] Skipping "${lead.name}" - does not satisfy contact details requirements (${qualResult.reason}).`);
-        continue;
-      }
-      qualifiedBatch.push(lead);
-    }
-
-    if (qualifiedBatch.length === 0) {
-      continue;
-    }
-
-    const qualResults = await qualifyLeadsWithAI(qualifiedBatch, pitchOffer, customOfferDetails, apiKey);
-
-    for (const lead of qualifiedBatch) {
-      const qual = qualResults.find(q => q.name.toLowerCase().trim() === lead.name.toLowerCase().trim()) || { isMatch: true };
-      if (!qual.isMatch) continue;
-
-      const normalizedName = lead.name.toLowerCase().trim();
-      seenNames.add(normalizedName);
-
-      let rating = lead.rating ? parseFloat(lead.rating) : null;
-      let reviews = lead.reviews ? parseInt(lead.reviews) : null;
-      if (!rating || rating === 0) {
-        rating = parseFloat((4.2 + Math.random() * 0.6).toFixed(1));
-      }
-      if (!reviews || reviews === 0) {
-        reviews = Math.floor(40 + Math.random() * 300);
-      }
-
-      processedLeads.push({
-        name: lead.name || "Unknown Business",
-        type: lead.type || niche,
-        city: lead.city || location,
-        email: lead.email || null,
-        phone: lead.phone || "",
-        rating,
-        reviews,
-        status: lead.email ? "not contacted" : "no_email",
-        instagram: lead.instagram || "",
-        website: lead.website || null,
-        website_status: lead.website_status || 'unknown',
-        linkedin: lead.linkedin || null,
-        facebook: lead.facebook || null,
-        whatsapp: lead.whatsapp || null,
-        twitter: lead.twitter || null
-      });
-    }
-
-    if (batchLeads.length < currentBatchLimit / 2) break;
-  }
-
-  return processedLeads.slice(0, maxLimit);
-}
-
-async function generateDeveloperOutreach(lead, config) {
-  const senderName = config.sender_name || "Muhammad Razi";
-  const senderRole = config.sender_role || "Independent Developer";
-  const companyName = config.company_name || "";
-  const useCompany = config.use_company_branding || false;
-  const senderType = config.sender_type || "developer";
-  const aboutText = config.about_text || "";
-  const portfolioUrl = config.portfolio_url || "";
-  const socialLinkedin = config.social_linkedin || "";
-  const socialGithub = config.social_github || "";
-  const socialTwitter = config.social_twitter || "";
-  const logoUrl = config.logo_url || "";
-  const bannerUrl = config.banner_url || "";
-  const profileIconUrl = config.profile_icon_url || "";
-  const workSamples = config.work_samples || "";
-  const senderLocation = config.sender_location || "";
-
-  let senderIntro = "";
-  let signature = "";
-  if (useCompany && companyName) {
-    senderIntro = `${senderName}, ${senderRole} at ${companyName}`;
-    signature = `${senderName}\n${senderRole}\n${companyName}`;
-  } else {
-    senderIntro = `${senderName}, ${senderRole}`;
-    signature = `${senderName}\n${senderRole}`;
-  }
-
-  const pitchOffer = config.pitch_offer || "whatsapp_bot";
-  const customOfferDetails = config.custom_offer_details || "";
-
-  let offerDescription = "design simple, custom AI reservation assistants and chat widgets that help cafes handle WhatsApp bookings automatically, saving 2-3 hours daily";
-  if (pitchOffer === "website_dev") {
-    offerDescription = "design and develop modern, high-performing websites and custom web platforms to help businesses turn traffic into loyal customers";
-  } else if (pitchOffer === "ai_chatbot") {
-    offerDescription = "build intelligent custom AI chatbot assistants that reply to customer inquiries instantly on your website, Google Maps, and Instagram DMs 24/7";
-  } else if (pitchOffer === "custom" && customOfferDetails) {
-    offerDescription = customOfferDetails;
-  }
-
-  // Pick fallback template index based on a simple hash of the lead's name to ensure diversity
-  const templateIndex = Math.abs(lead.name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)) % 5;
-
-  let subject = `quick question about ${lead.name}'s booking`;
-  let body = `Hi,\n\nNoticed ${lead.name} has a great reputation in ${lead.city} but bookings still go through a phone call — no online scheduling on the site.\n\nI build custom AI booking tools that let clients book directly (even after hours) without adding to your front desk's workload. Took me about 10 minutes to sketch how it'd work for your site.\n\nWorth a 2-minute look?\n\n— ${senderName}${portfolioUrl ? `\n\nPortfolio: ${portfolioUrl}` : ""}`;
-
-  if (templateIndex === 0) {
-    subject = `Quick idea for ${lead.name}`;
-    body = `Hi,\n\nI was looking at ${lead.name}'s website and noticed a couple of opportunities to capture more appointments from your search traffic.\n\nI build custom web apps, SaaS dashboards, and chat widgets. You can see some of my work here: ${portfolioUrl || "noryvex.com"}\n\nWould you be open to a 10-second sketch of what a modern booking widget looks like on your site?\n\nBest,\n${senderName}`;
-  } else if (templateIndex === 1) {
-    subject = `${lead.name} scheduling`;
-    body = `Hi,\n\nQuick question — does your team manually schedule all reservations over the phone, or are you looking to automate booking this quarter?\n\nI ask because I help startups and local clinics/cafes implement custom automated schedulers that sync with their calendar automatically.\n\nShould I send over a quick 2-minute preview of how it would work for ${lead.name}?\n\nBest regards,\n${senderName}`;
-  } else if (templateIndex === 2) {
-    subject = `question about ${lead.name}'s website`;
-    body = `Hi,\n\nNoticed the mobile version of ${lead.name}'s website has a few issues with reservation button alignments, which might be losing you bookings.\n\nI'm a developer and I build high-performance custom web applications and reservation tools. Here's my portfolio: ${portfolioUrl || "noryvex.com"}\n\nShould I send over a quick 30-second video of the layout tweaks I'd suggest?\n\nThanks,\n${senderName}`;
-  } else if (templateIndex === 3) {
-    subject = `quick question for ${lead.name}`;
-    body = `Hi,\n\nIf adding new digital reservation features or automating patient/client booking is on your roadmap for ${lead.name} this year, I'd love to connect.\n\nI help owners build custom reservation bots and customer portals from idea to launch.\n\nWorth a 2-minute introductory chat this week?\n\nCheers,\n${senderName}`;
-  } else if (templateIndex === 4) {
-    subject = `one thing I noticed on ${lead.name}`;
-    body = `Hi,\n\nI was looking at ${lead.name} and noticed bookings still go through a phone call — no online scheduling option on the site.\n\nI build custom AI booking tools that let patients/clients book directly (even after hours) without adding to your workload.\n\nWorth a 2-minute look?\n\n— ${senderName}${portfolioUrl ? `\n\nPortfolio: ${portfolioUrl}` : ""}`;
-  }
-
-  const geminiKey = config.gemini_key || process.env.GEMINI_API_KEY;
-  if (geminiKey) {
-    try {
-      let bestTemplateText = "";
-      const userId = config.user_id;
-      if (userId) {
-        try {
-          const bestTemplateRes = await pool.query(
-             "SELECT subject_template, body_template FROM pitch_templates WHERE user_id = $1 AND is_active = TRUE AND sent_count > 0 ORDER BY (reply_count::float / NULLIF(sent_count::float, 0)) DESC LIMIT 1",
-             [userId]
-          );
-          if (bestTemplateRes.rowCount > 0) {
-            const bt = bestTemplateRes.rows[0];
-            bestTemplateText = `\n\nREFERENCE EXAMPLE (Here is our historically highest-performing email pitch structure/tone for inspiration. Emulate its style, length, and lack of pushiness, but personalize it to the current business):\nSubject: ${bt.subject_template}\nBody:\n${bt.body_template}`;
-          }
-        } catch (e) {
-          console.error("Failed to fetch best template for outreach generation:", e);
-        }
-      }
-
-      const style = config.outreach_style || "casual";
-      let styleGuidelines = "";
-      
-      const stylesToolkit = `
-        HIGH-CONVERTING OUTREACH HOOK TEMPLATES & STYLES (You MUST select one of these 5 hook angles dynamically per email to ensure maximum variety and personalization. Do NOT use the same subject prefix or template structure for every lead):
-        
-        1. Problem-Based Hook (Subject: Quick idea about [Business Name] or [Business Name] website idea):
-           - Intro Angle: Mention seeing a few digital opportunities where their website, reservation experience, or online presence could be improved without rebuilding everything.
-        
-        2. Observation Hook (Subject: One thing I noticed on [Business Name] or Custom web experience for [Business Name]):
-           - Intro Angle: Make a highly personalized observation about their business or online presence.
-        
-        3. Curiosity Hook (Subject: Curious question or Question for [Business Name]):
-           - Intro Angle: Ask a low-friction question: "are you currently planning to build anything new this quarter, or are you mostly focused on improving your existing platform?"
-        
-        4. ROI Hook (Subject: Saving hours at [Business Name] or Saving engineering time):
-           - Intro Angle: Focus on the challenge of getting things built quickly and automating bookings without slowing down their core team/operations.
-        
-        5. Soft Value Hook (Subject: If development/updates are on [Business Name]'s roadmap...):
-           - Intro Angle: If expanding their product, website, or booking features is on their roadmap, offer senior dev/automation help to get it done.
-      `;
-
-      if (style === "roi") {
-        styleGuidelines = `
-        - Pitch Angle Focus: Prioritize the ROI-focused hook. Emphasize saving 2-3 hours of staff time daily, never missing booking messages, and improving conversion rates of chat visitors into paying customers. Mention financial benefits and call automation.`;
-      } else if (style === "feedback") {
-        styleGuidelines = `
-        - Pitch Angle Focus: Prioritize the Observation/Feedback hook. Start by referencing their Google rating of ${lead.rating}⭐ and reviews count (${lead.reviews} reviews). Note that they must get flooded with reservation requests, and share a constructive tip on how automated IG/Google Maps chat replies could streamline their reservation flow.`;
-      } else if (style === "direct") {
-        styleGuidelines = `
-        - Pitch Angle Focus: Prioritize the Pre-built Demo Showcase hook. Pitch directly that you've put together a quick, pre-built custom AI chat booking assistant prototype specifically customized for ${lead.name} to demonstrate how it handles instant reservations.`;
-      } else if (style === "collaboration") {
-        styleGuidelines = `
-        - Pitch Angle Focus: Prioritize the Collaboration & Partnership hook. Use a structure modeled after the "collaboration" style in the toolbox. Make it feel authentic, mentioning the specific industry and problem you solve, and proposing a collaboration check.`;
-      } else {
-        const pitchIdentity = (useCompany && companyName) ? `${senderRole} from ${companyName}` : senderRole;
-        styleGuidelines = `
-        - Pitch Angle Focus: Choose dynamically from the 5 templates in the styles toolkit. Keep it casual, warm, and helpful, offering to help another local business owner automate booking DMs, improve websites, or build custom reservation queries. Keep it very conversational and low-friction.`;
-      }
-
-      let offerGuidelines = "";
-      if (pitchOffer === "whatsapp_bot") {
-        offerGuidelines = `offering custom AI chat booking and WhatsApp reservation bots that automate reservation scheduling and handle bookings automatically.`;
-      } else if (pitchOffer === "website_dev") {
-        offerGuidelines = `offering custom website design, modern web development, and local optimization to build high-converting websites.`;
-      } else if (pitchOffer === "ai_chatbot") {
-        offerGuidelines = `offering custom AI chatbot assistants that reply to customer inquiries instantly on their website, Google Maps, and Instagram DMs 24/7.`;
-      } else if (pitchOffer === "custom" && customOfferDetails) {
-        offerGuidelines = `a custom-tailored service. Service details: "${customOfferDetails}". Use this description to understand our custom service.`;
-      }
-
-      const promptText = `
-        You are ${senderName}, working as "${senderRole}"${(useCompany && companyName) ? ` at ${companyName}` : ""}.
-        Redesign cold outreach from scratch for this specific business. Do NOT use templates or fixed structures.
-
-        Sender Profile Context:
-        - Account Type: ${senderType}
-        - Sender Bio: ${aboutText}
-        - Sender Portfolio Website: ${portfolioUrl || "None"}
-        - Sender Social Media: LinkedIn: ${socialLinkedin || "None"}, GitHub: ${socialGithub || "None"}
-        - Past Work Samples / Case Studies: ${workSamples || "None"}
-        - Sender Location: ${senderLocation || "remote (works online)"}
-        - Remote Context: ${senderLocation && senderLocation.toLowerCase() !== (lead.city || "").toLowerCase() ? `The sender is NOT local to ${lead.city}. Do NOT say you visited their location in-person. Use online-friendly phrases.` : "Sender is local/nearby."}
-
-        Business Details:
-        - Name: ${lead.name}
-        - Category: ${lead.type}
-        - Location: ${lead.city}
-        - Google Rating: ${lead.rating} out of 5 stars
-        - Google Reviews: ${lead.reviews}
-        - Instagram: ${lead.instagram || "None"}
-        - Website: ${lead.website || "None"}
-        - Website Status: ${lead.website_status || "unknown"} (can be "active", "no_website", or "down")
-        - Existing Personalized Icebreaker: ${lead.personalized_icebreaker || "None"}
-        Outreach Guidelines:
-        - Target Audience: Local business owner
-        - Tone: Professional, human, friendly, helpful, conversational. Never salesy, robotic, or desperate.
-        - Core Pitch Offer: ${offerGuidelines}
-        - Proof & Links: If a portfolio URL (${portfolioUrl || ""}) is available, weave it naturally into the pitch as proof of your work.
-        - Deep Personalization: Do NOT use lazy templates like praising their Google rating or review count. Instead, make a specific observation about their situation (e.g., "Noticed bookings still go through a phone call — no online scheduling on the site" or "Your website mobile buttons overlap").
-        - Low-Friction yes/no CTA: The CTA MUST be a specific, low-friction yes/no question (e.g., "Worth a 2-minute look?", "Should I send over a 10-second sketch of this?"). BANNED: Soft or open invitations like "Let me know if you want to chat" or "Happy to share ideas".
-        - Click-Worthy Subject Line: Keep it short, lowercase, and highly specific/curious (e.g., "quick question about [Business]'s booking" or "quick idea for [Business]'s website").
-
-        BANNED PHRASES: Do NOT use phrases like "Hope you're doing well", "I came across your website", "Just checking in", "Wanted to reach out", "We are the best", "Industry-leading", "Revolutionary", "Game changer", "Guaranteed", "World class".
-
-        Pitch Strategy Engine:
-        - First build a strategy from the user's selected niche, selected location, selected preset/custom offer, sender profile, work samples, and this lead's real data.
-        - Translate the offer into the lead's industry language. For example: restaurants care about reservations and table inquiries; salons/clinics care about appointment requests; home services care about quote capture and missed calls; gyms/studios care about trials, memberships, and class questions; B2B firms care about lead qualification and response speed.
-        - If this is a custom offer, do not copy the custom offer text. Extract its promised result, target buyer, pain point, and proof angle, then rewrite it naturally for this exact business.
-        - Use work samples only when relevant to the lead's industry or pain. If they do not match, mention capability generally and do not invent proof.
-        - Use the existing personalized icebreaker if it is concrete and useful. If it is generic, replace it with a stronger observation from rating, reviews, website status, social link, city, niche, or missing booking/contact flow.
-        - If the sender is remote or in a different city/country, never imply local visits or in-person familiarity. Use online research language.
-        - The final email must make clear: why this business, why this offer, why now, and what simple next step makes sense.
-
-        AI THINKING STEP-BY-STEP PROCESS:
-        1. Identify what the company actually does, their target customers, and brand positioning.
-        2. Infer the best industry-specific pitch angle from selected offer/custom offer + selected niche/location + this lead's actual data.
-        3. Find a genuine personalized icebreaker based on their existing icebreaker, rating, location, niche, website status, or social profile (never generic compliments like "I love your website").
-        4. Identify specific opportunities/weaknesses (website down/missing, outdated mobile styling, slow loading, missing booking tools, manual FAQ processing) in a constructive, friendly way.
-        5. Match relevant services that fit their business needs (don't force unrelated products).
-        6. Explain the business outcome / value proposition in industry terms.
-        7. Offer a low-friction call-to-action (CTA) e.g., asking for simple permission to show them a concept sketch, quick preview mockup, or 2-minute audit.
-
-        Return a single JSON object with these EXACT keys:
-        - "thinking": A brief paragraph detailing your step-by-step research answers (What they do, their customers, opportunities, matched service reason).
-        - "subject": Short click-worthy personalized subject line (no generic or spam words, lowercase).
-        - "opening": Personalized opening sentence hook referring to their business directly.
-        - "personalizedBody": Opportunity-focused paragraph explaining what can be improved.
-        - "valueProposition": The business benefit/outcome of the matched service for them, including portfolio URL if available.
-        - "cta": Low-pressure yes/no CTA (asking simple permission to send a quick concept preview).
-        - "closing": Cheers, ${senderName}${(useCompany && companyName) ? `\n${senderRole}\n${companyName}` : `\n${senderRole}`}
-        - "followUp1": "Subject: [follow up subject]\\n\\n[A short, friendly follow-up email text sent 3 days later, referencing the previous idea and offering simple value or permission to share a mockup]"
-        - "followUp2": "Subject: [follow up subject]\\n\\n[A short, conversational second follow-up text sent 7 days later, simple and low pressure]"
-        - "linkedinConnection": "A short, friendly LinkedIn connection request message (max 300 characters, no sales pitch, just warm networking context)"
-        - "linkedinFollowUp": "A short, conversational follow-up message to send once they accept the LinkedIn connection"
-        - "shortVersion": "Subject: [short subject]\\n\\n[An ultra-concise email version under 60 words body]"
-        - "longVersion": "Subject: [long subject]\\n\\n[A deconstructive, high-impact version under 150 words body]"
-        Return a raw JSON string.
-      `;
-      
-      const response = await fetchGeminiWithRetry(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: promptText }] }],
-            generationConfig: {
-              responseMimeType: "application/json"
-            }
-          }),
-          signal: AbortSignal.timeout(30000)
-        },
-        (type, text) => console.log(`[CAMPAIGN GEMINI RETRY] [${type.toUpperCase()}] ${text}`),
-        3
-      );
-      
-      if (response) {
-        const data = await response.json();
-        const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-        if (text) {
-          try {
-            const parsed = JSON.parse(text);
-            const fullBody = `${parsed.opening}\n\n${parsed.personalizedBody}\n\n${parsed.valueProposition}\n\n${parsed.cta}\n\n${parsed.closing}`;
-            // Return parsed fields as well as subject/body
-            return {
-              subject: parsed.subject || `quick question for ${lead.name}`,
-              body: fullBody,
-              thinking: parsed.thinking || "",
-              followUp1: parsed.followUp1 || "",
-              followUp2: parsed.followUp2 || "",
-              linkedinConnection: parsed.linkedinConnection || "",
-              linkedinFollowUp: parsed.linkedinFollowUp || "",
-              shortVersion: parsed.shortVersion || "",
-              longVersion: parsed.longVersion || "",
-              parsed: parsed
-            };
-          } catch (jsonErr) {
-            console.error("[CAMPAIGN GEMINI JSON PARSE ERR] Falling back to text split", jsonErr, text);
-          }
-        }
-      }
-    } catch (e) {
-      console.error("[CAMPAIGN GEMINI GENERATION FAIL]", e);
-    }
-  }
-
-  return { subject, body };
-}
-
-async function selectPitchTemplateForUser(userId) {
-  try {
-    const res = await pool.query(
-      "SELECT * FROM pitch_templates WHERE user_id = $1 AND is_active = TRUE",
-      [userId]
-    );
-    if (res.rowCount === 0) return null;
-    
-    const templates = res.rows;
-    
-    // Epsilon-Greedy selection: 30% exploration, 70% exploitation
-    const epsilon = 0.3;
-    const pickRandom = Math.random() < epsilon;
-    
-    if (pickRandom) {
-      const idx = Math.floor(Math.random() * templates.length);
-      return templates[idx];
-    } else {
-      let bestTemplate = templates[0];
-      let bestRate = -1;
-      
-      for (const t of templates) {
-        const sent = parseInt(t.sent_count) || 0;
-        const replies = parseInt(t.reply_count) || 0;
-        const rate = sent === 0 ? 0 : replies / sent;
-        if (rate > bestRate) {
-          bestRate = rate;
-          bestTemplate = t;
-        }
-      }
-      return bestTemplate;
-    }
-  } catch (err) {
-    console.error("Error in selectPitchTemplateForUser:", err.message);
-    return null;
-  }
-}
-
-async function evolvePitchTemplate(userId, config) {
-  try {
-    const geminiKey = config.gemini_key || process.env.GEMINI_API_KEY || "local_antigravity";
-    
-    // Fetch active templates for the user
-    const res = await pool.query(
-      "SELECT * FROM pitch_templates WHERE user_id = $1 AND is_active = TRUE",
-      [userId]
-    );
-    if (res.rowCount === 0) return;
-    
-    const templates = res.rows;
-    
-    // Find the low-performing template to evolve: sent >= 5 and reply_rate < 0.10
-    const lowTemplate = templates.find(t => {
-      const sent = parseInt(t.sent_count) || 0;
-      const replies = parseInt(t.reply_count) || 0;
-      const rate = sent === 0 ? 0 : replies / sent;
-      return sent >= 5 && rate < 0.10;
-    });
-    
-    if (!lowTemplate) return;
-    
-    // Find the best-performing template as reference
-    let bestTemplate = null;
-    let bestRate = -1;
-    for (const t of templates) {
-      if (t.id === lowTemplate.id) continue;
-      const sent = parseInt(t.sent_count) || 0;
-      const replies = parseInt(t.reply_count) || 0;
-      const rate = sent === 0 ? 0 : replies / sent;
-      if (rate > bestRate && replies > 0) {
-        bestRate = rate;
-        bestTemplate = t;
-      }
-    }
-    
-    console.log(`[AI PITCH OPTIMIZER] Evolving low-performing template "${lowTemplate.version_name}" (ID ${lowTemplate.id}) for user ${userId}...`);
-    
-    const promptText = `
-You are an AI Pitch Optimizer Agent. Your goal is to rewrite a low-performing cold outreach email template to improve its reply rate.
-We are running A/B tests on cold email pitches for local businesses.
-
-Here is the low-performing template that we want to evolve:
-- Name: ${lowTemplate.version_name}
-- Subject Template: ${lowTemplate.subject_template}
-- Body Template: ${lowTemplate.body_template}
-- Sent Count: ${lowTemplate.sent_count}
-- Reply Count: ${lowTemplate.reply_count}
-
-${bestTemplate ? `Here is the highest-performing template for this user as a reference:
-- Name: ${bestTemplate.version_name}
-- Subject Template: ${bestTemplate.subject_template}
-- Body Template: ${bestTemplate.body_template}
-- Sent Count: ${bestTemplate.sent_count}
-- Reply Count: ${bestTemplate.reply_count}` : ""}
-
-Strategy Guidelines:
-- Analyze why the low-performing template failed (e.g., too salesy, weak hook, poor framing).
-- Incorporate trending email copy frameworks (e.g. short, conversational, pattern interrupt, permission-based call to action, offering a free video audit or demo instead of booking a call directly).
-- Use these exact placeholders in brackets: {{FirstName}} (recipient owner name), {{BusinessName}} (company name), {{City}} (location), {{Website}} (website url).
-- Ensure the tone matches professional yet casual cold outreach from Muhammad, an AI automation developer.
-
-Response Format:
-You must respond ONLY with a JSON object in this format:
-{
-  "versionName": "Evolved version name (e.g., Evolved Miner Style)",
-  "subject": "Email Subject Line",
-  "body": "Email body content"
-}
-Do not output any markdown code blocks, conversational intro/outro text, or explanations. Just the JSON object.
-`;
-
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
-    const payload = {
-      contents: [{ parts: [{ text: promptText }] }]
-    };
-    
-    const resObj = await fetchGeminiWithRetry(url, {
-      method: "POST",
-      body: JSON.stringify(payload)
-    });
-    
-    const resJson = await resObj.json();
-    const rawText = resJson.candidates?.[0]?.content?.parts?.[0]?.text || "";
-    
-    let parsed = null;
-    try {
-      let cleanText = rawText.trim();
-      const match = rawText.match(/```json\s*([\s\S]*?)\s*```/);
-      if (match) cleanText = match[1].trim();
-      parsed = JSON.parse(cleanText);
-    } catch (e) {
-      console.error("Failed to parse evolved pitch JSON from model:", e.message, rawText);
-      return;
-    }
-    
-    if (parsed && parsed.versionName && parsed.subject && parsed.body) {
-      await pool.query(
-        "UPDATE pitch_templates SET is_active = FALSE WHERE id = $1",
-        [lowTemplate.id]
-      );
-      
-      const insRes = await pool.query(
-        `INSERT INTO pitch_templates (user_id, version_name, subject_template, body_template)
-         VALUES ($1, $2, $3, $4) RETURNING *`,
-        [userId, parsed.versionName, parsed.subject, parsed.body]
-      );
-      
-      console.log(`[AI PITCH OPTIMIZER] Successfully evolved pitch template to "${parsed.versionName}" (ID ${insRes.rows[0].id}) for user ${userId}.`);
-      
-      await pool.query(
-        `INSERT INTO notifications (user_id, title, message, type, link)
-         VALUES ($1, $2, $3, 'system', 'Dashboard')`,
-        [
-          userId,
-          `📈 Pitch Evolved: ${parsed.versionName}`,
-          `Our AI agent automatically optimized low-performing pitch "${lowTemplate.version_name}" and evolved it to increase your reply rates!`,
-          'system'
-        ]
-      );
-    }
-  } catch (err) {
-    console.error("Error in evolvePitchTemplate:", err.message);
-  }
-}
 
 async function getAvailableOutbox(userId, config) {
   try {
@@ -6300,7 +5045,6 @@ async function getAvailableOutbox(userId, config) {
     
     const todayStr = new Date().toDateString();
     for (const outbox of outboxes.rows) {
-      // Check if we need to reset daily_sent_count because last_sent_at was a different day
       const lastSentDate = outbox.last_sent_at ? new Date(outbox.last_sent_at).toDateString() : null;
       let sentCount = outbox.daily_sent_count;
       if (lastSentDate !== todayStr) {
@@ -6314,7 +5058,9 @@ async function getAvailableOutbox(userId, config) {
           email: outbox.email,
           pass: decryptedPass,
           id: outbox.id,
-          isCustom: true
+          isCustom: true,
+          smtp_host: outbox.smtp_host || null,
+          smtp_port: outbox.smtp_port || null,
         };
       }
     }
@@ -6328,593 +5074,108 @@ async function getAvailableOutbox(userId, config) {
       email: config.gmail_user,
       pass: decryptText(config.gmail_pass),
       id: null,
-      isCustom: false
+      isCustom: false,
+      smtp_host: config.smtp_host || null,
+      smtp_port: config.smtp_port || null,
     };
   }
   
   return null;
 }
 
-async function triggerCronCampaign(config) {
-  const { niche, location, daily_lead_limit, gemini_key, search_mode, user_id, sequence_id, autopilot_mode = 'both' } = config;
-  
-  // 1. Process due sequence steps for existing leads (only if not fetch_only)
-  if (autopilot_mode !== 'fetch_only') {
-    try {
-      console.log(`[CONTENT AGENT] [CRON] User ${user_id}: Checking for due sequence follow-ups...`);
-      const dueLeads = await pool.query(
-        "SELECT * FROM leads WHERE user_id = $1 AND current_sequence_id IS NOT NULL AND next_sequence_run_at <= NOW() AND status IN ('contacted', 'not contacted')",
-        [user_id]
-      );
 
-      if (dueLeads.rowCount > 0) {
-        console.log(`[CONTENT AGENT] [CRON] User ${user_id}: Found ${dueLeads.rowCount} leads due for sequence follow-up.`);
-        const nodemailer = await import("nodemailer");
+function formatProfessionalEmailHtml(bodyText, config = {}) {
+  if (!bodyText) return "";
+  const senderName = config.sender_name || "Muhammad Razi";
+  const senderRole = config.sender_role || "Independent Developer";
+  const companyName = config.company_name || "";
+  const useCompany = config.use_company_branding || false;
+  const portfolioUrl = config.portfolio_url || "noryvex.com";
+  const socialLinkedin = config.social_linkedin || "";
+  const socialTwitter = config.social_twitter || "";
 
-        for (const lead of dueLeads.rows) {
-          const nextStepNumber = lead.current_sequence_step + 1;
-          const stepRes = await pool.query(
-            "SELECT * FROM sequence_steps WHERE sequence_id = $1 AND step_number = $2",
-            [lead.current_sequence_id, nextStepNumber]
-          );
-
-          if (stepRes.rowCount === 0) {
-            // No more steps or invalid step, finish sequence
-            await pool.query(
-              "UPDATE leads SET current_sequence_id = NULL, next_sequence_run_at = NULL WHERE id = $1 AND user_id = $2",
-              [lead.id, user_id]
-            );
-            continue;
-          }
-
-          const step = stepRes.rows[0];
-
-          // Format subject & body
-          let subject = step.subject
-            .replace(/{{name}}/gi, lead.name || "")
-            .replace(/{{city}}/gi, lead.city || "")
-            .replace(/{{niche}}/gi, niche || "")
-            .replace(/{{website}}/gi, lead.website || "")
-            .replace(/{{Icebreaker}}/gi, lead.personalized_icebreaker || "");
-          
-          let body = step.body
-            .replace(/{{name}}/gi, lead.name || "")
-            .replace(/{{city}}/gi, lead.city || "")
-            .replace(/{{niche}}/gi, niche || "")
-            .replace(/{{website}}/gi, lead.website || "")
-            .replace(/{{Icebreaker}}/gi, lead.personalized_icebreaker || "");
-
-          // Rotate outbox
-          const sender = await getAvailableOutbox(user_id, config);
-          if (!sender) {
-            console.warn(`[CONTENT AGENT] [CRON] Outbox rotation limits reached. Cannot follow up with ${lead.name} (${lead.email}) today.`);
-            continue;
-          }
-
-          try {
-            const transporter = nodemailer.default.createTransport({
-              service: "gmail",
-              auth: {
-                user: sender.email,
-                pass: sender.pass
-              }
-            });
-
-            const baseUrl = await getDynamicBaseUrl();
-            const htmlBody = body.replace(/\n/g, "<br/>") + 
-              `<br/><br/><img src="${baseUrl}/api/track-open/${lead.id}" width="1" height="1" style="display:none;"/>`;
-
-            await transporter.sendMail({
-              from: `"${sender.email.split('@')[0]}" <${sender.email}>`,
-              to: lead.email,
-              subject: subject,
-              html: htmlBody
-            });
-
-            // Log in emails table
-            await pool.query(
-              `INSERT INTO emails (from_name, from_email, company, subject, preview, time_received, is_read, category, labels, user_id)
-               VALUES ($1, $2, $3, $4, $5, NOW(), TRUE, 'sent', ARRAY['sent'], $6)`,
-              [lead.name, lead.email, lead.name, subject, body, user_id]
-            );
-
-            // Find if there is a next step after this one
-            const subsequentStepRes = await pool.query(
-              "SELECT delay_days FROM sequence_steps WHERE sequence_id = $1 AND step_number = $2",
-              [lead.current_sequence_id, nextStepNumber + 1]
-            );
-
-            if (subsequentStepRes.rowCount > 0) {
-              const nextDelay = subsequentStepRes.rows[0].delay_days || 3;
-              await pool.query(
-                `UPDATE leads 
-                 SET current_sequence_step = $1, 
-                     next_sequence_run_at = NOW() + INTERVAL '${nextDelay} days',
-                     status = 'contacted'
-                 WHERE id = $2 AND user_id = $3`,
-                [nextStepNumber, lead.id, user_id]
-              );
-              console.log(`[CONTENT AGENT] [CRON] User ${user_id}: Sent sequence step ${nextStepNumber} to ${lead.name}. Next step scheduled in ${nextDelay} days.`);
-            } else {
-              // Sequence completed
-              await pool.query(
-                `UPDATE leads 
-                 SET current_sequence_step = $1, 
-                     current_sequence_id = NULL,
-                     next_sequence_run_at = NULL,
-                     status = 'contacted'
-                 WHERE id = $2 AND user_id = $3`,
-                [nextStepNumber, lead.id, user_id]
-              );
-              console.log(`[CONTENT AGENT] [CRON] User ${user_id}: Sent final sequence step ${nextStepNumber} to ${lead.name}. Sequence completed.`);
-            }
-
-            // Increment custom outbox sent count
-            if (sender.isCustom) {
-              await pool.query(
-                "UPDATE user_outboxes SET daily_sent_count = daily_sent_count + 1, last_sent_at = NOW() WHERE id = $1",
-                [sender.id]
-              );
-            }
-          } catch (sendErr) {
-            console.error(`[CONTENT AGENT] [CRON] Failed sending follow-up step ${nextStepNumber} to ${lead.name}:`, sendErr.message);
-          }
-        }
-      }
-    } catch (err) {
-      console.error("[CONTENT AGENT] [CRON SEQUENCE FOLLOWUPS ERROR] Failed:", err.message);
-    }
+  let signatureTitle = senderRole;
+  if (useCompany && companyName) {
+    signatureTitle = `${senderRole} · ${companyName}`;
   }
 
-  // 1.5 Process AI Follow-Up Queue (open/unopened behavior-based)
-  if (autopilot_mode !== 'fetch_only') {
-    try {
-      console.log(`[FOLLOWUP AGENT] [CRON] User ${user_id}: Checking follow-up queue...`);
-      const followupDue = await pool.query(
-        `SELECT * FROM leads
-         WHERE user_id = $1
-           AND email IS NOT NULL AND email != ''
-           AND status NOT IN ('replied', 'archived', 'won', 'trashed', 'not contacted', 'new', 'no_email')
-           AND followup_count < 4
-           AND next_followup_at IS NOT NULL
-           AND next_followup_at <= NOW()
-         ORDER BY qualification_score DESC NULLS LAST
-         LIMIT 5`,
-        [user_id]
-      );
+  // Split plain text into paragraphs
+  const paragraphs = bodyText
+    .split(/\n\s*\n/)
+    .map(p => p.trim())
+    .filter(p => p.length > 0);
 
-      if (followupDue.rowCount > 0) {
-        console.log(`[FOLLOWUP AGENT] [CRON] User ${user_id}: Found ${followupDue.rowCount} leads due for AI follow-up.`);
-        for (const lead of followupDue.rows) {
-          try {
-            // Use internal HTTP call to /api/leads/:id/send-followup via direct logic
-            // (avoid circular HTTP — call the DB/email logic inline)
-            const config2 = config; // already decrypted
-            const geminiKey2 = config2.gemini_key || process.env.GEMINI_API_KEY || "local_antigravity";
-            const senderName2 = config2.sender_name || "Developer";
-            const senderRole2 = config2.sender_role || "Freelancer";
-            const companyName2 = config2.company_name || "";
-            const signature2 = (config2.use_company_branding && companyName2)
-              ? `${senderName2}\n${senderRole2}\n${companyName2}`
-              : `${senderName2}\n${senderRole2}`;
+  const mainParagraphsHtml = paragraphs.map(p => {
+    const htmlPara = p.replace(/\n/g, "<br/>");
+    return `<p style="margin: 0 0 16px 0; font-size: 15px; line-height: 1.65; color: #1e293b;">${htmlPara}</p>`;
+  }).join("");
 
-            const followupNumber = (lead.followup_count || 0) + 1;
-            const strategy = lead.followup_strategy || {};
-            const stepStrategy = (strategy.steps && strategy.steps[followupNumber - 1]) || strategy;
-            const subjectHook = stepStrategy.subjectHook || `Quick follow-up — ${lead.name}`;
-            const angle = stepStrategy.angle || strategy.angle || "Re-offer value";
-            const tone = stepStrategy.tone || strategy.tone || "friendly";
+  return `
+<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 15px; line-height: 1.65; color: #1e293b; max-width: 580px; margin: 0 auto; padding: 24px 16px; background-color: #ffffff;">
+  ${mainParagraphsHtml}
 
-            const now2 = new Date();
-            const openedAt2 = lead.opened_at ? new Date(lead.opened_at) : null;
-            const openSignal2 = lead.is_opened && openedAt2
-              ? `They opened our email ${Math.floor((now2 - openedAt2) / 3600000)}h ago but didn't reply.`
-              : `They have NOT opened our email yet.`;
-
-            const promptText2 = `You are ${senderName2}, a ${senderRole2}${companyName2 ? ` at ${companyName2}` : ""}.
-Write follow-up #${followupNumber} to ${lead.name} (${lead.type || "business"} in ${lead.city || "their city"}).
-Open signal: ${openSignal2}
-Strategy: ${angle} | Tone: ${tone}
-MAX 80 words. Subject on line 1 as "Subject: ${subjectHook}". Output ONLY email.
-Signature: Cheers,\n${signature2}`;
-
-            const response2 = await fetchGeminiWithRetry(
-              `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey2}`,
-              {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ contents: [{ parts: [{ text: promptText2 }] }], generationConfig: {} }),
-                signal: AbortSignal.timeout(20000)
-              },
-              (type, text) => console.log(`[FOLLOWUP AGENT] [CRON] [${type.toUpperCase()}] ${text}`),
-              0
-            );
-            const aiData2 = await response2.json();
-            const generated2 = (aiData2.candidates?.[0]?.content?.parts?.[0]?.text || "").trim();
-            const lines2 = generated2.split("\n");
-            const subject2 = lines2[0].startsWith("Subject:") ? lines2[0].replace("Subject:", "").trim() : subjectHook;
-            const body2 = lines2[0].startsWith("Subject:") ? lines2.slice(2).join("\n").trim() : generated2;
-
-            const sender2 = await getAvailableOutbox(user_id, config2);
-            if (!sender2) {
-              console.warn(`[FOLLOWUP AGENT] [CRON] No outbox available for User ${user_id}. Skipping.`);
-              continue;
-            }
-
-            const nodemailer2 = await import("nodemailer");
-            const transporter2 = nodemailer2.default.createTransport({
-              service: "gmail",
-              auth: { user: sender2.email, pass: sender2.pass }
-            });
-
-            const baseUrl2 = await getDynamicBaseUrl();
-            const htmlBody2 = body2.replace(/\n/g, "<br/>") +
-              `<br/><br/><img src="${baseUrl2}/api/track-open/${lead.id}" width="1" height="1" style="display:none;"/>`;
-
-            await transporter2.sendMail({
-              from: `"${sender2.email.split('@')[0]}" <${sender2.email}>`,
-              to: lead.email,
-              subject: subject2,
-              html: htmlBody2
-            });
-
-            await pool.query(
-              `INSERT INTO emails (from_name, from_email, company, subject, preview, time_received, is_read, category, labels, user_id, lead_id, followup_number)
-               VALUES ($1, $2, $3, $4, $5, NOW(), TRUE, 'sent', ARRAY['sent'], $6, $7, $8)`,
-              [lead.name, lead.email, lead.name, subject2, body2, user_id, lead.id, followupNumber]
-            );
-
-            const maxFollowups2 = strategy.maxFollowups || 3;
-            const nextStep2 = strategy.steps && strategy.steps[followupNumber];
-            const nextDelayDays2 = nextStep2 ? nextStep2.dayOffset : 4;
-
-            if (followupNumber < maxFollowups2) {
-              await pool.query(
-                `UPDATE leads SET followup_count = $1, last_followup_at = NOW(),
-                 next_followup_at = NOW() + ($2 || ' days')::INTERVAL, status = 'contacted'
-                 WHERE id = $3 AND user_id = $4`,
-                [followupNumber, nextDelayDays2, lead.id, user_id]
-              );
-            } else {
-              await pool.query(
-                `UPDATE leads SET followup_count = $1, last_followup_at = NOW(), next_followup_at = NULL, followup_strategy = NULL
-                 WHERE id = $2 AND user_id = $3`,
-                [followupNumber, lead.id, user_id]
-              );
-            }
-
-            if (sender2.isCustom) {
-              await pool.query("UPDATE user_outboxes SET daily_sent_count = daily_sent_count + 1, last_sent_at = NOW() WHERE id = $1", [sender2.id]);
-            }
-            console.log(`[FOLLOWUP AGENT] [CRON] Follow-up #${followupNumber} sent to ${lead.name} (${lead.email}).`);
-          } catch (fuErr) {
-            console.error(`[FOLLOWUP AGENT] [CRON] Failed for ${lead.name}:`, fuErr.message);
-          }
-        }
-      } else {
-        console.log(`[FOLLOWUP AGENT] [CRON] User ${user_id}: No follow-ups due.`);
-      }
-    } catch (err) {
-      console.error("[FOLLOWUP AGENT] [CRON ERROR] Failed:", err.message);
-    }
-  }
-
-  // 2. Perform lead scraping (only if both or fetch_only)
-
-  let leadsFound = [];
-  const newLeads = [];
-  
-  if (autopilot_mode === 'both' || autopilot_mode === 'fetch_only') {
-    console.log(`[SEARCHER AGENT] [CRON] Performing scan for User ${user_id}: niche: '${niche}' in location: '${location}' using mode: '${search_mode}'...`);
-    
-    if (search_mode === "deepsearch") {
-      try {
-        leadsFound = await performDeepSearchDirect(niche, location, gemini_key, daily_lead_limit, config);
-      } catch (e) {
-        console.error(`[SEARCHER AGENT] [CRON DEEPSEARCH ERROR] Failed for User ${user_id}:`, e.message);
-        await handleGeminiError(user_id, e, "Automated Campaign DeepSearch Scan");
-      }
-    } else {
-      try {
-        leadsFound = await performYelpScrapingDirect(niche, location, daily_lead_limit, config);
-      } catch (e) {
-        console.error(`[SEARCHER AGENT] [CRON YELP ERROR] Failed for User ${user_id}:`, e.message);
-        await handleGeminiError(user_id, e, "Automated Campaign Yelp Scan");
-      }
-    }
-
-    // Deduplicate and insert leads
-    for (const lead of leadsFound) {
-      const checkDup = await pool.query(
-        "SELECT id, status FROM leads WHERE name = $1 AND city = $2 AND user_id = $3",
-        [lead.name, lead.city, user_id]
-      );
-      if (checkDup.rowCount === 0) {
-        let emailTrashed = false;
-        if (lead.email) {
-          const checkEmailTrashed = await pool.query(
-            "SELECT id FROM leads WHERE email = $1 AND status = 'trashed' AND user_id = $2",
-            [lead.email, user_id]
-          );
-          if (checkEmailTrashed.rowCount > 0) {
-            emailTrashed = true;
-          }
-        }
-
-        if (!emailTrashed) {
-          const insertRes = await pool.query(
-            `INSERT INTO leads (name, type, city, email, phone, rating, reviews, status, instagram, ai_enabled, user_id, website, website_status) 
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, $10, $11, $12) RETURNING *`,
-            [lead.name, lead.type, lead.city, lead.email, lead.phone, lead.rating, lead.reviews, lead.email ? 'not contacted' : 'no_email', lead.instagram, user_id, lead.website || null, lead.website_status || 'unknown']
-          );
-          if (lead.email) {
-            newLeads.push(insertRes.rows[0]);
-          }
-        }
-      }
-    }
-  }
-
-  // 3. Perform outreach (only if both or contact_only)
-  let leadsToContact = [];
-  if (autopilot_mode === 'both') {
-    leadsToContact = newLeads.slice(0, daily_lead_limit);
-  } else if (autopilot_mode === 'contact_only') {
-    try {
-      const existingNotContacted = await pool.query(
-        "SELECT * FROM leads WHERE user_id = $1 AND status = 'not contacted' AND email IS NOT NULL AND email != '' LIMIT $2",
-        [user_id, daily_lead_limit]
-      );
-      leadsToContact = existingNotContacted.rows;
-      console.log(`[CONTENT AGENT] [CRON] User ${user_id}: Loaded ${leadsToContact.length} existing not-contacted leads for outreach.`);
-    } catch (e) {
-      console.error(`[CONTENT AGENT] [CRON ERROR] Failed loading existing leads:`, e.message);
-    }
-  }
-
-  if (autopilot_mode !== 'fetch_only' && leadsToContact.length > 0) {
-    console.log(`[CONTENT AGENT] [CRON] User ${user_id}: Contacting ${leadsToContact.length} leads under autopilot mode '${autopilot_mode}'...`);
-    const nodemailer = await import("nodemailer");
-    const emailedThisRun = new Set(); // dedup within this cron run
-
-    for (const lead of leadsToContact) {
-      const normalizedEmail = (lead.email || "").toLowerCase().trim();
-
-      // Skip blank or already-emailed-this-run addresses
-      if (!normalizedEmail || emailedThisRun.has(normalizedEmail)) {
-        console.log(`[CONTENT AGENT] [CRON] Skipping ${lead.email} — already sent in this run.`);
-        continue;
-      }
-
-      // DB re-check: lead must still be 'not contacted'
-      const freshCheck = await pool.query(
-        `SELECT id FROM leads WHERE id = $1 AND user_id = $2 AND status = 'not contacted'`,
-        [lead.id, user_id]
-      );
-      if (freshCheck.rowCount === 0) {
-        console.log(`[CONTENT AGENT] [CRON] Skipping ${lead.name} — already contacted.`);
-        continue;
-      }
-
-      // 24h email dedup check
-      const recentCheck = await pool.query(
-        `SELECT id FROM emails WHERE user_id = $1 AND from_email = $2 AND time_received > NOW() - INTERVAL '24 hours' LIMIT 1`,
-        [user_id, normalizedEmail]
-      );
-      if (recentCheck.rowCount > 0) {
-        console.log(`[CONTENT AGENT] [CRON] Skipping ${lead.email} — already emailed in last 24h.`);
-        await pool.query(
-          "UPDATE leads SET status = 'contacted', pipeline_stage = 'Contacted', contacted_at = NOW() WHERE id = $1 AND user_id = $2",
-          [lead.id, user_id]
-        );
-        continue;
-      }
-
-      // Mark as contacted BEFORE sending to prevent race
-      await pool.query(
-        "UPDATE leads SET status = 'contacted', pipeline_stage = 'Contacted', contacted_at = NOW() WHERE id = $1 AND user_id = $2 AND status = 'not contacted'",
-        [lead.id, user_id]
-      );
-
-      // Check if there is an active sequence
-      let subject = "";
-      let body = "";
-      let firstStep = null;
-
-      if (sequence_id) {
-        try {
-          const stepRes = await pool.query(
-            "SELECT * FROM sequence_steps WHERE sequence_id = $1 AND step_number = 1",
-            [sequence_id]
-          );
-          if (stepRes.rowCount > 0) {
-            firstStep = stepRes.rows[0];
-            subject = firstStep.subject
-              .replace(/{{name}}/gi, lead.name || "")
-              .replace(/{{city}}/gi, lead.city || "")
-              .replace(/{{niche}}/gi, niche || "")
-              .replace(/{{website}}/gi, lead.website || "")
-              .replace(/{{Icebreaker}}/gi, lead.personalized_icebreaker || "");
-            body = firstStep.body
-              .replace(/{{name}}/gi, lead.name || "")
-              .replace(/{{city}}/gi, lead.city || "")
-              .replace(/{{niche}}/gi, niche || "")
-              .replace(/{{website}}/gi, lead.website || "")
-              .replace(/{{Icebreaker}}/gi, lead.personalized_icebreaker || "");
-          }
-        } catch (seqErr) {
-          console.error(`[CONTENT AGENT] [CRON] Failed fetching step 1 of sequence ${sequence_id}:`, seqErr.message);
-        }
-      }
-
-      // Fallback to normal AI outreach generation if no sequence or first step not found
-      let chosenPitchId = null;
-      if (!firstStep) {
-        const template = await selectPitchTemplateForUser(user_id);
-        if (template) {
-          chosenPitchId = template.id;
-          
-          // Increment template sent_count
-          await pool.query(
-            "UPDATE pitch_templates SET sent_count = sent_count + 1 WHERE id = $1",
-            [template.id]
-          );
-          
-          let firstName = "there";
-          if (lead.name) {
-            const parts = lead.name.trim().split(/\s+/);
-            if (parts.length > 0) firstName = parts[0];
-          }
-          
-          subject = template.subject_template
-            .replace(/{{FirstName}}/g, firstName)
-            .replace(/{{BusinessName}}/g, lead.name || "")
-            .replace(/{{City}}/g, lead.city || "")
-            .replace(/{{Website}}/g, lead.website || "your website")
-            .replace(/{{Icebreaker}}/gi, lead.personalized_icebreaker || "");
-            
-          body = template.body_template
-            .replace(/{{FirstName}}/g, firstName)
-            .replace(/{{BusinessName}}/g, lead.name || "")
-            .replace(/{{City}}/g, lead.city || "")
-            .replace(/{{Website}}/g, lead.website || "your website")
-            .replace(/{{Icebreaker}}/gi, lead.personalized_icebreaker || "");
-            
-          console.log(`[CONTENT AGENT] [CRON] User ${user_id}: Selected A/B test template "${template.version_name}" (ID ${template.id}) for outreach to ${lead.name}.`);
-        } else {
-          const generated = await generateDeveloperOutreach(lead, config);
-          subject = generated.subject;
-          body = generated.body;
-        }
-      }
-
-      // Rotate outbox
-      const sender = await getAvailableOutbox(user_id, config);
-      if (!sender) {
-        console.warn(`[CONTENT AGENT] [CRON] Outbox rotation limits reached. Cannot send initial email to ${lead.name} (${lead.email}) today.`);
-        continue;
-      }
-
-      console.log(`[CONTENT AGENT] [CRON] User ${user_id}: Sending outreach email to ${lead.name} (${lead.email}) from ${sender.email}...`);
-
-      try {
-        const transporter = nodemailer.default.createTransport({
-          service: "gmail",
-          auth: {
-            user: sender.email,
-            pass: sender.pass
-          }
-        });
-
-        const baseUrl = await getDynamicBaseUrl();
-        const htmlBody = body.replace(/\n/g, "<br/>") + 
-          `<br/><br/><img src="${baseUrl}/api/track-open/${lead.id}" width="1" height="1" style="display:none;"/>`;
-
-        await transporter.sendMail({
-          from: `"${sender.email.split('@')[0]}" <${sender.email}>`,
-          to: lead.email,
-          subject: subject,
-          html: htmlBody
-        });
-
-        // Update database status and sequence tracking
-        if (firstStep) {
-          // Find if there is a step 2
-          const nextStepRes = await pool.query(
-            "SELECT delay_days FROM sequence_steps WHERE sequence_id = $1 AND step_number = 2",
-            [sequence_id]
-          );
-          if (nextStepRes.rowCount > 0) {
-            const nextDelay = nextStepRes.rows[0].delay_days || 3;
-            await pool.query(
-              "UPDATE leads SET status = 'contacted', current_sequence_id = $1, current_sequence_step = 1, next_sequence_run_at = NOW() + INTERVAL '$2 days' WHERE id = $3 AND user_id = $4",
-              [sequence_id, nextDelay, lead.id, user_id]
-            );
-          } else {
-            await pool.query(
-              "UPDATE leads SET status = 'contacted', pipeline_stage = 'Contacted', current_sequence_id = NULL, current_sequence_step = 1, next_sequence_run_at = NULL WHERE id = $1 AND user_id = $2",
-              [lead.id, user_id]
-            );
-          }
-        } else {
-          await pool.query(
-            "UPDATE leads SET status = 'contacted', pipeline_stage = 'Contacted', sent_pitch_id = $1 WHERE id = $2 AND user_id = $3",
-            [chosenPitchId, lead.id, user_id]
-          );
-        }
-
-        // Create an entry in emails table
-        await pool.query(
-          `INSERT INTO emails (from_name, from_email, company, subject, preview, time_received, is_read, category, labels, user_id)
-           VALUES ($1, $2, $3, $4, $5, NOW(), TRUE, 'sent', ARRAY['sent'], $6)`,
-          [lead.name, normalizedEmail, lead.name, subject, body.substring(0, 300), user_id]
-        );
-
-        emailedThisRun.add(normalizedEmail);
-        console.log(`[CONTENT AGENT] [CRON] User ${user_id}: Email successfully sent to ${lead.name}`);
-
-        // Increment custom outbox sent count
-        if (sender.isCustom) {
-          await pool.query(
-            "UPDATE user_outboxes SET daily_sent_count = daily_sent_count + 1, last_sent_at = NOW() WHERE id = $1",
-            [sender.id]
-          );
-        }
-      } catch (err) {
-        console.error(`[CONTENT AGENT] [CRON OUTBOUND ERROR] User ${user_id} failed for ${lead.name}:`, err.message);
-        const errStr = err.message.toLowerCase();
-        if (errStr.includes("recipient") || errStr.includes("address") || errStr.includes("not found") || errStr.includes("invalid") || errStr.includes("550")) {
-           await pool.query("UPDATE leads SET status = 'trashed', current_sequence_id = NULL, next_sequence_run_at = NULL WHERE id = $1 AND user_id = $2", [lead.id, user_id]);
-           console.log(`[LEAD MANAGER AGENT] [CRON AUTO-TRASH] Marked lead ${lead.name} as trashed due to bounce error: ${err.message}`);
-        }
-      }
-    }
-  }
-
-  // Insert cron campaign sent notifications
-  if (typeof emailedThisRun !== 'undefined' && emailedThisRun.size > 0) {
-    try {
-      await pool.query(
-        `INSERT INTO notifications (user_id, title, message, type, link)
-         VALUES ($1, $2, $3, $4, 'Pipeline')`,
-        [user_id, `🚀 Campaign Sent`, `Outbound campaign completed. Sent ${emailedThisRun.size} emails today.`, 'campaign']
-      );
-    } catch (notifErr) {
-      console.error("Failed to insert cron campaign notification:", notifErr.message);
-    }
-  }
+  <!-- Executive Professional Signature Block -->
+  <div style="margin-top: 32px; padding-top: 20px; border-top: 1px solid #e2e8f0;">
+    <div style="font-weight: 700; font-size: 16px; color: #0f172a; letter-spacing: -0.01em;">${senderName}</div>
+    <div style="font-size: 13.5px; color: #64748b; margin-top: 2px; font-weight: 500;">${signatureTitle}</div>
+    ${portfolioUrl ? `<div style="margin-top: 8px;"><a href="${portfolioUrl.startsWith('http') ? portfolioUrl : 'https://' + portfolioUrl}" target="_blank" style="color: #2563eb; text-decoration: none; font-size: 13.5px; font-weight: 600;">🌐 ${portfolioUrl}</a></div>` : ''}
+    ${(socialLinkedin || socialTwitter) ? `
+      <div style="margin-top: 10px; font-size: 12.5px; color: #94a3b8; display: flex; gap: 12px;">
+        ${socialLinkedin ? `<a href="${socialLinkedin}" target="_blank" style="color: #475569; text-decoration: none;">💼 LinkedIn</a>` : ''}
+        ${socialTwitter ? `<a href="${socialTwitter}" target="_blank" style="color: #475569; text-decoration: none;">🐦 Twitter/X</a>` : ''}
+      </div>
+    ` : ''}
+  </div>
+</div>
+  `.trim();
 }
 
-async function classifyIncomingEmail(emailBody, subject, config, userId) {
-  const geminiKey = config.gemini_key || process.env.GEMINI_API_KEY || "local_antigravity";
-  const prompt = `You are an AI sales assistant. Analyze this reply from a prospect and classify it into one of these categories:
-- 'interested' (prospect shows positive interest, agreement, requests a demo, or asks for more details)
-- 'not_interested' (prospect explicitly declines, unsubscribes, or says they are not interested)
-- 'follow_up' (prospect asks to follow up later, asks to be contacted at another time, or gives a neutral response)
-- 'spam' (the email is an automated bounce, out of office reply, or marketing spam)
+async function generateDeveloperOutreach(lead, config) {
+  const senderName = config.sender_name || "Muhammad Razi";
+  const senderRole = config.sender_role || "Independent Developer";
+  const companyName = config.company_name || "";
+  const useCompany = config.use_company_branding || false;
+  const portfolioUrl = config.portfolio_url || "noryvex.com";
 
-Email Subject: ${subject}
-Email Body: ${emailBody}
+  // Decision maker greeting
+  const recipientName = lead.owner_name ? lead.owner_name.split(' ')[0] : "";
+  const greeting = recipientName ? `Hi ${recipientName},` : "Hi there,";
 
-Respond with exactly one of the following category strings: interested, not_interested, follow_up, spam. Do not include any formatting, markdown, or other text.`;
-
-  try {
-    const response = await fetchGeminiWithRetry(geminiKey, {
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }]
-      })
-    });
-    const data = await response.json();
-    const resultText = (data.candidates?.[0]?.content?.parts?.[0]?.text || "").trim().toLowerCase();
-    
-    if (['interested', 'not_interested', 'follow_up', 'spam'].includes(resultText)) {
-      return resultText;
-    }
-    return 'unread'; // fallback
-  } catch (err) {
-    console.error("[CLASSIFICATION ERROR]", err.message);
-    return 'unread';
+  // Custom Icebreaker from research or fallback
+  let icebreaker = lead.personalized_icebreaker;
+  if (!icebreaker || icebreaker.length < 5) {
+    icebreaker = `Noticed ${lead.name} has a great local presence in ${lead.city || "your area"}.`;
   }
+
+  const pitchOffer = config.pitch_offer || "whatsapp_bot";
+  const customOfferDetails = config.custom_offer_details || "";
+
+  let offerShort = "a custom AI booking assistant to handle client requests 24/7";
+  if (pitchOffer === "website_dev") {
+    offerShort = "a high-performing website overhaul that converts web traffic into bookings";
+  } else if (pitchOffer === "ai_chatbot") {
+    offerShort = "an automated AI receptionist for website & Instagram inquiry response";
+  } else if (pitchOffer === "custom" && customOfferDetails) {
+    offerShort = customOfferDetails;
+  }
+
+  const templateIndex = Math.abs(lead.name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)) % 4;
+
+  let subject = `Quick question for ${lead.name}`;
+  let body = `${greeting}\n\n${icebreaker}\n\nI build ${offerShort} without adding to front-desk workload.\n\nTook me a minute to sketch how it would look for ${lead.name}. Open to a 2-minute preview?\n\nBest,\n${senderName}${portfolioUrl ? `\n${portfolioUrl}` : ""}`;
+
+  if (templateIndex === 1) {
+    subject = `Idea for ${lead.name}`;
+    body = `${greeting}\n\n${icebreaker}\n\nAre you currently looking to automate online bookings or customer inquiries for ${lead.name} this quarter?\n\nI help local businesses implement simple, automated tools that handle inquiries instantly.\n\nShould I send over a quick 30-second preview of how it would look?\n\nCheers,\n${senderName}`;
+  } else if (templateIndex === 2) {
+    subject = `Question regarding ${lead.name}`;
+    body = `${greeting}\n\n${icebreaker}\n\nI'm a developer helping companies in ${lead.city || "your area"} streamline customer booking & website leads.\n\nWould you be open to seeing a 10-second mock-up of what an automated scheduling widget would look like for ${lead.name}?\n\nBest regards,\n${senderName}`;
+  } else if (templateIndex === 3) {
+    subject = `${lead.name} outreach`;
+    body = `${greeting}\n\n${icebreaker}\n\nIf improving online conversions or automating client scheduling is on your radar for ${lead.name}, I'd love to share a quick idea.\n\nWorth a 2-minute look this week?\n\nThanks,\n${senderName}`;
+  }
+
+  return { subject, body };
 }
 
 async function syncUserInbox(userId, config) {
@@ -6924,7 +5185,7 @@ async function syncUserInbox(userId, config) {
     return { success: false, error: "Gmail SMTP/IMAP credentials not connected. Please connect Gmail under settings." };
   }
 
-  // ── Ensure new columns exist (safe inline migration for when startup migrations failed) ──
+  //  Ensure new columns exist (safe inline migration for when startup migrations failed) 
   try {
     await pool.query(`ALTER TABLE emails ADD COLUMN IF NOT EXISTS email_uid VARCHAR(150) DEFAULT NULL;`);
     await pool.query(`ALTER TABLE emails ADD COLUMN IF NOT EXISTS followup_number INTEGER DEFAULT 0;`);
@@ -6937,9 +5198,37 @@ async function syncUserInbox(userId, config) {
   } catch (migErr) {
     console.warn(`[EMAIL AGENT] [SYNC] Inline migration warning (non-fatal): ${migErr.message}`);
   }
-
-  console.log(`[EMAIL AGENT] [SYNC] Connecting to Gmail IMAP for User ${userId} (${gmail_user})...`);
-
+  const emailLower = (gmail_user || "").toLowerCase();
+  let imapHost = null;
+  let imapPort = 993;
+  if (emailLower.endsWith("@gmail.com") || emailLower.endsWith("@googlemail.com")) { imapHost = "imap.gmail.com"; }
+  else if (emailLower.endsWith("@outlook.com") || emailLower.endsWith("@hotmail.com") || emailLower.endsWith("@live.com") || emailLower.endsWith("@msn.com")) { imapHost = "outlook.office365.com"; }
+  else if (emailLower.endsWith("@yahoo.com") || emailLower.endsWith("@ymail.com")) { imapHost = "imap.mail.yahoo.com"; }
+  else if (emailLower.endsWith("@icloud.com") || emailLower.endsWith("@me.com") || emailLower.endsWith("@mac.com")) { imapHost = "imap.mail.me.com"; }
+  else if (emailLower.endsWith("@zoho.com") || emailLower.endsWith("@zohomail.com")) { imapHost = "imap.zoho.com"; }
+  else {
+    try {
+      const outboxRes = await pool.query("SELECT smtp_host, imap_host, imap_port FROM user_outboxes WHERE user_id = $1 AND email = $2 LIMIT 1", [userId, gmail_user]);
+      if (outboxRes.rowCount > 0) {
+        const ob = outboxRes.rows[0];
+        imapHost = ob.imap_host || ob.smtp_host || null;
+        imapPort = ob.imap_port || 993;
+      }
+    } catch (e) { console.warn("[EMAIL AGENT] [SYNC] Could not fetch outbox host:", e.message); }
+    // Also check campaign_settings for stored smtp_host/imap_host
+    if (!imapHost) {
+      try {
+        const csRes = await pool.query("SELECT smtp_host, imap_host, imap_port FROM campaign_settings WHERE user_id = $1 LIMIT 1", [userId]);
+        if (csRes.rowCount > 0) {
+          const cs = csRes.rows[0];
+          imapHost = cs.imap_host || cs.smtp_host || null;
+          if (cs.imap_port) imapPort = cs.imap_port;
+        }
+      } catch(e) { /* ignore */ }
+    }
+    if (!imapHost) { const domain = emailLower.split("@")[1] || ""; imapHost = "mail." + domain; }
+  }
+  console.log(`[EMAIL AGENT] [SYNC] Connecting to IMAP (${imapHost}:${imapPort}) for User ${userId} (${gmail_user})...`);
   // Fetch all leads for this user to match incoming senders
   const leadsRes = await pool.query(
     "SELECT id, name, email, ai_enabled, status, sent_pitch_id FROM leads WHERE user_id = $1 AND email IS NOT NULL AND status != 'trashed'",
@@ -6956,8 +5245,8 @@ async function syncUserInbox(userId, config) {
   }
 
   const client = new ImapFlow({
-    host: "imap.gmail.com",
-    port: 993,
+    host: imapHost,
+    port: imapPort,
     secure: true,
     auth: {
       user: gmail_user,
@@ -7016,7 +5305,7 @@ async function syncUserInbox(userId, config) {
 
             if (isBounceBody || bodyPreview) {
               for (const emailKey of leadsMap.keys()) {
-                // Skip empty email keys — "".includes("") is always true and causes false matches
+                // Skip empty email keys  "".includes("") is always true and causes false matches
                 if (!emailKey || emailKey.length < 6) continue;
                 if (bodyPreview.includes(emailKey) || subject.toLowerCase().includes(emailKey)) {
                   const bouncedLead = leadsMap.get(emailKey);
@@ -7048,7 +5337,7 @@ async function syncUserInbox(userId, config) {
                   try {
                     await pool.query(
                       `INSERT INTO notifications (user_id, title, message, type, link) VALUES ($1, $2, $3, 'system', 'Pipeline')`,
-                      [userId, `📧 Bounced Email: ${bouncedLead.name}`, autoResOnBounce ? `Email bounced. Lead moved to Re-research for email lookup.` : `Email bounced. Lead moved to Archived.`]
+                      [userId, ` Bounced Email: ${bouncedLead.name}`, autoResOnBounce ? `Email bounced. Lead moved to Re-research for email lookup.` : `Email bounced. Lead moved to Archived.`]
                     );
                   } catch (_) {}
                   break;
@@ -7069,7 +5358,7 @@ async function syncUserInbox(userId, config) {
                 ? `mid:${messageId}`
                 : `hash:${fromEmail}:${subject}:${date ? new Date(date).toISOString().slice(0,19) : 'nodate'}`;
 
-            // Primary dedup: check email_uid (safe — column may not exist yet)
+            // Primary dedup: check email_uid (safe  column may not exist yet)
             let emailCheck = { rowCount: 0, rows: [] };
             try {
               emailCheck = await pool.query(
@@ -7120,7 +5409,7 @@ async function syncUserInbox(userId, config) {
               // Classify the incoming email category using AI
               const detectedCategory = await classifyIncomingEmail(bodyPreview, subject, config, userId);
 
-              // Insert email reply record — includes email_uid for dedup
+              // Insert email reply record  includes email_uid for dedup
               let insertedEmail;
               try {
                 insertedEmail = await pool.query(
@@ -7133,9 +5422,9 @@ async function syncUserInbox(userId, config) {
                   console.log(`[EMAIL AGENT] [SYNC] User ${userId}: Duplicate message blocked via unique constraint (email_uid). Skipping.`);
                   continue;
                 }
-                // Column doesn't exist yet (migration race) — fall back to basic INSERT
+                // Column doesn't exist yet (migration race)  fall back to basic INSERT
                 if (insertErr.code === '42703') {
-                  console.warn(`[EMAIL AGENT] [SYNC] email_uid column not found — falling back to basic INSERT.`);
+                  console.warn(`[EMAIL AGENT] [SYNC] email_uid column not found  falling back to basic INSERT.`);
                   try {
                     insertedEmail = await pool.query(
                       `INSERT INTO emails (from_name, from_email, company, subject, preview, time_received, is_read, category, labels, user_id, message_id)
@@ -7151,7 +5440,7 @@ async function syncUserInbox(userId, config) {
                 }
               }
 
-              // ── AUTO-REPLY / SPAM DETECTION ──
+              //  AUTO-REPLY / SPAM DETECTION 
               const detectAutoReplyEnabled = config.auto_detect_auto_reply !== false;
               if (detectAutoReplyEnabled && detectedCategory === 'spam') {
                 console.log(`[EMAIL AGENT] Auto-reply/spam detected from ${matchedLead.name}. Moving to Manual Research by Boss. No draft generated.`);
@@ -7159,7 +5448,7 @@ async function syncUserInbox(userId, config) {
                   "UPDATE emails SET labels = array_append(labels, 'auto_reply') WHERE id = $1 AND NOT ('auto_reply' = ANY(labels))",
                   [insertedEmail.rows[0].id]
                 );
-                // Move lead to Manual Research by Boss — needs manual attention, not real reply
+                // Move lead to Manual Research by Boss  needs manual attention, not real reply
                 await pool.query(
                   "UPDATE leads SET pipeline_stage = 'Manual Research by Boss' WHERE id = $1 AND user_id = $2 AND pipeline_stage NOT IN ('Replied','Won','Archived')",
                   [matchedLead.id, userId]
@@ -7167,7 +5456,7 @@ async function syncUserInbox(userId, config) {
                 continue;
               }
 
-              // Increment template reply_count — only for real human replies (not auto-replies)
+              // Increment template reply_count  only for real human replies (not auto-replies)
               if (matchedLead.sent_pitch_id && matchedLead.status !== 'replied' && matchedLead.status !== 'archived') {
                 await pool.query(
                   "UPDATE pitch_templates SET reply_count = reply_count + 1 WHERE id = $1",
@@ -7189,7 +5478,7 @@ async function syncUserInbox(userId, config) {
                 );
                 console.log(`[EMAIL AGENT] Prospect ${matchedLead.name} marked interested! Lead stage moved to Replied.`);
               } else {
-                // follow_up or unread — move to Replied for human follow-up
+                // follow_up or unread  move to Replied for human follow-up
                 await pool.query(
                   "UPDATE leads SET status = 'replied', pipeline_stage = 'Replied' WHERE id = $1 AND user_id = $2",
                   [matchedLead.id, userId]
@@ -7198,16 +5487,16 @@ async function syncUserInbox(userId, config) {
 
               // Insert real-time database notification for the reply
               try {
-                let notifTitle = `💬 New Reply: ${matchedLead.name}`;
+                let notifTitle = ` New Reply: ${matchedLead.name}`;
                 let notifMsg = `Subject: ${subject}`;
                 let notifType = 'reply';
 
                 if (detectedCategory === 'interested') {
-                  notifTitle = `🔥 Hot Reply: ${matchedLead.name}`;
+                  notifTitle = ` Hot Reply: ${matchedLead.name}`;
                   notifMsg = `They are interested! Stage moved to Replied.`;
                   notifType = 'reply';
                 } else if (detectedCategory === 'not_interested') {
-                  notifTitle = `💤 Declined: ${matchedLead.name}`;
+                  notifTitle = ` Declined: ${matchedLead.name}`;
                   notifMsg = `Declined offer. Lead auto-archived.`;
                   notifType = 'system';
                 }
@@ -7222,7 +5511,7 @@ async function syncUserInbox(userId, config) {
 
               newRepliesCount++;
 
-              // ── AI Draft Reply / Meeting detection & Escalations ──
+              //  AI Draft Reply / Meeting detection & Escalations 
               if (matchedLead.ai_enabled && config.ai_draft_replies_enabled !== false) {
                 console.log(`[EMAIL AGENT] [SYNC] User ${userId}: Generating draft reply or handling booking for ${matchedLead.name}...`);
                 try {
@@ -7303,7 +5592,7 @@ async function syncUserInbox(userId, config) {
 
                   if (replyText) {
                     if (escalationReason) {
-                      replyText = `[⚠️ NEEDS HUMAN REVIEW: Prospect requested pricing/mockup/NDA info]\n\n${replyText}`;
+                      replyText = `[ NEEDS HUMAN REVIEW: Prospect requested pricing/mockup/NDA info]\n\n${replyText}`;
                     }
 
                     // Save as DRAFT for user review
@@ -7312,11 +5601,11 @@ async function syncUserInbox(userId, config) {
                        VALUES ($1, $2, $3, $4, $5, NOW(), TRUE, 'draft', $6, $7, $8)`,
                       [matchedLead.name, fromEmail, matchedLead.name, draftSubject, replyText, draftLabels, userId, matchedLead.id]
                     );
-                    console.log(`[EMAIL AGENT] [DRAFT SAVED] Draft reply for ${matchedLead.name} saved — awaiting user approval.`);
+                    console.log(`[EMAIL AGENT] [DRAFT SAVED] Draft reply for ${matchedLead.name} saved  awaiting user approval.`);
                     try {
                       await pool.query(
                         `INSERT INTO notifications (user_id, title, message, type, link) VALUES ($1, $2, $3, 'system', 'Inbox')`,
-                        [userId, `🪄 AI Draft Reply: ${matchedLead.name}`, `Draft response generated. Review and send from Inbox.`]
+                        [userId, ` AI Draft Reply: ${matchedLead.name}`, `Draft response generated. Review and send from Inbox.`]
                       );
                     } catch (_) {}
                   }
@@ -7470,7 +5759,7 @@ Do not output any other explanations, formatting, markdown, or conversational te
         await pool.query(
           `INSERT INTO notifications (user_id, title, message, type, link)
            VALUES ($1, $2, $3, 'system', 'Pipeline')`,
-          [userId, `📧 Email Found: ${lead.name}`, `Re-research found email ${cleaned}. Lead moved back to New.`]
+          [userId, ` Email Found: ${lead.name}`, `Re-research found email ${cleaned}. Lead moved back to New.`]
         );
       } else {
         console.log(`[RE-RESEARCH FAILED] Could not find email for lead "${lead.name}" (ID ${lead.id}). Model replied: ${resText}`);
@@ -7486,7 +5775,7 @@ Do not output any other explanations, formatting, markdown, or conversational te
         await pool.query(
           `INSERT INTO notifications (user_id, title, message, type, link)
            VALUES ($1, $2, $3, 'system', 'Pipeline')`,
-          [userId, `🔍 Manual Research Required: ${lead.name}`, `AI research agent could not find an email. Lead moved to Manual Research by Boss.`]
+          [userId, ` Manual Research Required: ${lead.name}`, `AI research agent could not find an email. Lead moved to Manual Research by Boss.`]
         );
       }
     } catch (err) {
@@ -8035,9 +6324,108 @@ async function detectMeetingBookingIntent(email, config, userId) {
   }
 }
 
-// ── Bridge Endpoints (frontend-compatible aliases) ──
+//  Bridge Endpoints (frontend-compatible aliases) 
 
-// Bridge: /api/deepsearch → triggers async scan-deepsearch and returns scanId
+// Bridge: /api/deepsearch  triggers async scan-deepsearch and returns scanId
+
+
+
+// Alias: /api/scan-deepsearch  used by LeadFinder.jsx deepsearch mode; returns {scan_id}
+app.post("/api/scan-deepsearch", authenticate, scanRateLimit, async (req, res) => {
+  // Normalize body: frontend sends pitchOffer/requiredContact, deepsearch expects pitch_offer/required_contact
+  req.body.pitch_offer    = req.body.pitchOffer    || req.body.pitch_offer;
+  req.body.required_contact = req.body.requiredContact || req.body.required_contact;
+  // We delegate to /api/deepsearch inline handler but first create scan and return scan_id
+  try {
+    const { niche, location, limit, pitch_offer, required_contact } = req.body;
+    const settingsRes = await pool.query("SELECT * FROM campaign_settings WHERE user_id = $1 LIMIT 1", [req.userId]);
+    const config = decryptConfig(settingsRes.rows[0]) || {};
+    const userRes = await pool.query("SELECT subscription_tier FROM users WHERE id = $1", [req.userId]);
+    const userTier = (userRes.rows[0]?.subscription_tier || "agency").toLowerCase();
+    let maxLimit = 50;
+    if (userTier === "free") maxLimit = 5;
+    else if (userTier === "growth") maxLimit = 25;
+    const resolvedLimit    = Math.min(maxLimit, parseInt(limit || config.daily_lead_limit || 8, 10));
+    const resolvedNiche    = niche    || config.niche    || "Clinics";
+    const resolvedLocation = location || config.location || "Austin, TX";
+    const resolvedPitch    = pitch_offer    || config.pitch_offer    || "whatsapp_bot";
+    const resolvedContact  = required_contact || config.required_contact || "email_or_phone";
+    const apiKey = config.gemini_key || process.env.GEMINI_API_KEY || "local_antigravity";
+
+    const scanRes = await pool.query(
+      "INSERT INTO scans (user_id, status, progress, logs) VALUES ($1, 'running', 0, $2) RETURNING id",
+      [req.userId, JSON.stringify([{ type: "info", text: `Starting DeepSearch for "${resolvedNiche}" in ${resolvedLocation}...` }])]
+    );
+    const scan_id = scanRes.rows[0].id;
+    res.json({ scan_id });  // Return immediately so frontend can poll
+
+    const addLog = (type, text) => pool.query(
+      "UPDATE scans SET logs = logs || $1::jsonb WHERE id = $2",
+      [JSON.stringify([{ type, text }]), scan_id]
+    ).catch(() => {});
+
+    // Background: run AI deepsearch
+    (async () => {
+      try {
+        addLog("info", "AI is scanning the web for leads...");
+        await pool.query("UPDATE scans SET progress = 15 WHERE id = $1", [scan_id]);
+
+        // Use Gemini to generate leads list
+        const prompt = `You are a B2B lead research expert. Find ${resolvedLimit} real businesses matching: Niche: "${resolvedNiche}", Location: "${resolvedLocation}". For each business provide: name, type, city, email (if likely public), phone, website, rating (1-5), reviews count, owner_name (if known). Return as JSON array. Only real businesses.`;
+        
+        let rawLeads = [];
+        try {
+          const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.3 } })
+          });
+          const geminiData = await geminiRes.json();
+          const text = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || "[]";
+          const match = text.match(/[[sS]*]/);
+          if (match) rawLeads = JSON.parse(match[0]);
+        } catch (e) {
+          addLog("warn", `AI error: ${e.message}. Saving partial results.`);
+        }
+
+        await pool.query("UPDATE scans SET progress = 70 WHERE id = $1", [scan_id]);
+        addLog("info", `Processing ${rawLeads.length} leads...`);
+
+        let saved = 0;
+        for (const lead of rawLeads) {
+          if (!lead.name) continue;
+          try {
+            await pool.query(
+              `INSERT INTO leads (name, type, city, email, phone, rating, reviews, status, website, user_id)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+               ON CONFLICT DO NOTHING`,
+              [
+                lead.name, lead.type || resolvedNiche, lead.city || resolvedLocation,
+                lead.email || null, lead.phone || null,
+                lead.rating ? parseFloat(lead.rating) : 4.0,
+                lead.reviews ? parseInt(lead.reviews, 10) : 0,
+                lead.email ? "not contacted" : "no_email",
+                lead.website || null, req.userId
+              ]
+            );
+            saved++;
+          } catch { /* skip duplicate */ }
+        }
+
+        await pool.query(
+          "UPDATE scans SET status = 'done', progress = 100, logs = logs || $1::jsonb, total_found = $2 WHERE id = $3",
+          [JSON.stringify([{ type: "success", text: ` Done. ${saved} leads saved.` }]), saved, scan_id]
+        );
+      } catch (err) {
+        await pool.query("UPDATE scans SET status = 'error', progress = 100 WHERE id = $1", [scan_id]);
+        addLog("error", `Scan failed: ${err.message}`);
+      }
+    })();
+  } catch (err) {
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+  }
+});
+
 app.post("/api/deepsearch", authenticate, async (req, res) => {
   try {
     const { niche, location, limit, pitch_offer, required_contact, mode } = req.body;
@@ -8110,7 +6498,7 @@ app.post("/api/deepsearch", authenticate, async (req, res) => {
 
         await pool.query(
           "UPDATE scans SET status = 'done', progress = 100, logs = logs || $1::jsonb WHERE id = $2",
-          [JSON.stringify([{ type: "success", text: `✓ Done. ${saved} leads saved.` }]), scanId]
+          [JSON.stringify([{ type: "success", text: ` Done. ${saved} leads saved.` }]), scanId]
         );
       } catch (err) {
         await pool.query(
@@ -8148,7 +6536,7 @@ app.get("/api/automation/status", authenticate, (req, res) => {
   res.json({ jobs });
 });
 
-// Bridge: /api/autopilot/run → triggers full campaign cycle (scrape + email)
+// Bridge: /api/autopilot/run  triggers full campaign cycle (scrape + email)
 app.post("/api/autopilot/run", authenticate, async (req, res) => {
   try {
     const settingsRes = await pool.query("SELECT * FROM campaign_settings WHERE user_id = $1 LIMIT 1", [req.userId]);
@@ -8196,7 +6584,7 @@ app.post("/api/autopilot/run", authenticate, async (req, res) => {
   }
 });
 
-// Bridge: /api/campaigns/run → send emails to not-contacted leads using AI
+// Bridge: /api/campaigns/run  send emails to not-contacted leads using AI
 app.post("/api/campaigns/run", authenticate, async (req, res) => {
   try {
     const settingsRes = await pool.query("SELECT * FROM campaign_settings WHERE user_id = $1 LIMIT 1", [req.userId]);
@@ -8233,10 +6621,7 @@ app.post("/api/campaigns/run", authenticate, async (req, res) => {
       const emailedThisRun = new Set(); // dedup within this run
       try {
         const nodemailer = await import("nodemailer");
-        const transporter = nodemailer.default.createTransport({
-          service: "gmail",
-          auth: { user: config.gmail_user, pass: decryptText(config.gmail_pass) }
-        });
+        const transporter = getSmtpTransport(nodemailer.default, { email: config.gmail_user, pass: decryptText(config.gmail_pass), smtp_host: config.smtp_host, smtp_port: config.smtp_port });
 
         for (const lead of leads) {
           // Check stop signal
@@ -8248,7 +6633,7 @@ app.post("/api/campaigns/run", authenticate, async (req, res) => {
           // Skip if already emailed this address in this run
           const normalizedEmail = (lead.email || "").toLowerCase().trim();
           if (!normalizedEmail || emailedThisRun.has(normalizedEmail)) {
-            console.log(`[CAMPAIGNS/RUN] Skipping ${lead.email} — already sent in this run.`);
+            console.log(`[CAMPAIGNS/RUN] Skipping ${lead.email}  already sent in this run.`);
             continue;
           }
 
@@ -8259,7 +6644,7 @@ app.post("/api/campaigns/run", authenticate, async (req, res) => {
               [lead.id, req.userId]
             );
             if (freshCheck.rowCount === 0) {
-              console.log(`[CAMPAIGNS/RUN] Skipping ${lead.email} — status changed to '${lead.status}' (already contacted).`);
+              console.log(`[CAMPAIGNS/RUN] Skipping ${lead.email}  status changed to '${lead.status}' (already contacted).`);
               continue;
             }
 
@@ -8268,7 +6653,7 @@ app.post("/api/campaigns/run", authenticate, async (req, res) => {
               [req.userId, normalizedEmail]
             );
             if (recentEmailCheck.rowCount > 0) {
-              console.log(`[CAMPAIGNS/RUN] Skipping ${lead.email} — email already sent to this address in the last 24h.`);
+              console.log(`[CAMPAIGNS/RUN] Skipping ${lead.email}  email already sent to this address in the last 24h.`);
               // Mark as contacted so it doesn't get picked up again
               await pool.query(
                 "UPDATE leads SET status = 'contacted', pipeline_stage = 'Contacted', contacted_at = NOW() WHERE id = $1 AND user_id = $2",
@@ -8323,7 +6708,7 @@ app.post("/api/campaigns/run", authenticate, async (req, res) => {
           await pool.query(
             `INSERT INTO notifications (user_id, title, message, type, link)
              VALUES ($1, $2, $3, $4, $5)`,
-            [req.userId, `🚀 Campaign Complete`, `Successfully sent ${sent}/${leads.length} outbound campaign emails.`, 'campaign', 'Pipeline']
+            [req.userId, ` Campaign Complete`, `Successfully sent ${sent}/${leads.length} outbound campaign emails.`, 'campaign', 'Pipeline']
           );
         } catch (notifErr) {
           console.error("Failed to insert manual campaign notification:", notifErr.message);
@@ -8336,9 +6721,9 @@ app.post("/api/campaigns/run", authenticate, async (req, res) => {
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
+// 
 // ADMIN PANEL ROUTES  (all under /admin/api/* + /admin page)
-// ─────────────────────────────────────────────────────────────────────────────
+// 
 
 // Serve the admin HTML panel
 app.get("/admin", (req, res) => {
@@ -8515,7 +6900,7 @@ app.get("/admin/api/activity", authenticateAdmin, async (req, res) => {
   }
 });
 
-// ── GOOGLE CALENDAR INTEGRATION HELPER FUNCTIONS ──
+//  GOOGLE CALENDAR INTEGRATION HELPER FUNCTIONS 
 async function getGoogleCalendarToken(userId) {
   const result = await pool.query(
     "SELECT google_calendar_access_token, google_calendar_refresh_token FROM campaign_settings WHERE user_id = $1 LIMIT 1",
@@ -8565,7 +6950,7 @@ async function refreshGoogleCalendarToken(userId, refreshToken) {
 
 
 
-// ── GOOGLE CALENDAR INTEGRATION ROUTES ──
+//  GOOGLE CALENDAR INTEGRATION ROUTES 
 app.get("/api/integrations/google-calendar/auth", authenticate, async (req, res) => {
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
@@ -8727,7 +7112,7 @@ app.post("/api/integrations/google-calendar/events", authenticate, async (req, r
   }
 });
 
-// ── GOOGLE SHEETS INTEGRATION HELPER & ROUTES ──
+//  GOOGLE SHEETS INTEGRATION HELPER & ROUTES 
 async function syncLeadToGoogleSheets(userId, lead) {
   try {
     const settingsRes = await pool.query(
@@ -8929,3 +7314,5 @@ setupDatabase().then(() => {
   server.headersTimeout = 905000; // 15 minutes + padding
   startCronScheduler();
 });
+
+
