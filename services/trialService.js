@@ -12,20 +12,27 @@ const pool = new Pool({
  * Handle new trial request submission (Section 6)
  */
 export async function createTrialRequest({ userId, businessName, contactName, email, phone, niche, agentScope }) {
+  const targetUserId = userId || 19;
+  const cleanEmail = (email || "").trim().toLowerCase();
+
   const res = await pool.query(
     `INSERT INTO trial_requests (user_id, business_name, contact_name, email, phone, niche, agent_scope, trial_status, requested_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, 'requested', NOW())
      RETURNING id, business_name, trial_status, requested_at`,
-    [userId || 19, businessName, contactName, email, phone || null, niche || "General", agentScope || "both"]
+    [targetUserId, businessName, contactName, cleanEmail, phone || null, niche || "General", agentScope || "both"]
   );
 
-  // Also record as a Tier 5 Inbound lead in leads table
-  await pool.query(
-    `INSERT INTO leads (name, owner_name, email, phone, type, city, source_type, source_tier, status, pipeline_stage, user_id)
-     VALUES ($1, $2, $3, $4, $5, 'Inbound Trial Request', 'inbound', 5, 'not contacted', 'New Inbound Lead', $6)
-     ON CONFLICT (user_id, LOWER(TRIM(email))) DO UPDATE SET source_tier = 5`,
-    [businessName, contactName, email, phone || null, niche || "General", userId || 19]
-  );
+  // Check if lead already exists in leads table
+  const existingLead = await pool.query("SELECT id FROM leads WHERE user_id = $1 AND LOWER(TRIM(email)) = $2 LIMIT 1", [targetUserId, cleanEmail]);
+  if (existingLead.rowCount > 0) {
+    await pool.query("UPDATE leads SET source_tier = 5, source_type = 'inbound' WHERE id = $1", [existingLead.rows[0].id]);
+  } else {
+    await pool.query(
+      `INSERT INTO leads (name, owner_name, email, phone, type, city, source_type, source_tier, status, pipeline_stage, user_id)
+       VALUES ($1, $2, $3, $4, $5, 'Inbound Trial Request', 'inbound', 5, 'not contacted', 'New Inbound Lead', $6)`,
+      [businessName, contactName, cleanEmail, phone || null, niche || "General", targetUserId]
+    );
+  }
 
   return res.rows[0];
 }

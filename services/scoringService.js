@@ -51,22 +51,24 @@ export function calculateLeadTierAndScore(lead) {
     };
   }
 
-  // Hard exclusion 2: Contacted within 90 days or Unsubscribed/Bounced
+  // Hard exclusion 2: Unsubscribed, Bounced, Opt-Out, or Replied
   const status = (lead.status || "").toLowerCase();
   const stage = (lead.pipeline_stage || "").toLowerCase();
   if (
     status === "unsubscribed" ||
     status === "bounced" ||
+    status === "replied" ||
     status === "opt_out" ||
     status === "trashed" ||
-    stage.includes("opt out")
+    stage.includes("opt out") ||
+    stage.includes("replied")
   ) {
     return {
       tier,
       score: -1000,
       shouldQueue: false,
       isCompetitor: false,
-      statusReason: "Hard Excluded (Unsubscribed / Bounced)"
+      statusReason: `Hard Excluded (${status === "replied" ? "Replied Lead" : "Unsubscribed / Bounced"})`
     };
   }
 
@@ -147,7 +149,6 @@ export function calculateLeadTierAndScore(lead) {
     statusReason: shouldQueue ? "Passed Tier & Score Gate" : "Needs Review / Low Quality"
   };
 }
-
 
 // Alias export for backward compatibility with pipelineService.js
 export function calculateQualityScore(lead) {

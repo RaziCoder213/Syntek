@@ -19,13 +19,13 @@ export function generateUnsubscribeToken(leadId, secret = process.env.JWT_SECRET
 
 /**
  * Compliance Footer Injector (Section 5)
- * Server-side auto-appended physical address and opt-out link
+ * Server-side auto-appended real physical address and opt-out link
  */
 export function formatCompliantEmailHtml(bodyText, config = {}) {
   if (!bodyText) return "";
   const senderName = config.sender_name || "Muhammad Razi";
   const senderRole = config.sender_role || "Founder, Noryvex";
-  const companyAddress = config.company_address || "100 Congress Ave, Austin, TX 78701";
+  const companyAddress = config.company_address || "Karachi, Pakistan";
 
   const paragraphs = bodyText
     .split(/\n\s*\n/)
