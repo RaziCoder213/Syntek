@@ -49,6 +49,11 @@ export async function generateCompliantOutreachEmail(lead, config = {}) {
   const step = lead.sequence_step || 0;
   const formattedNiche = formatNicheName(lead.type || lead.niche || config.niche);
 
+  // Dynamic Solution Intro Line: Niche-aware per lead (never hardcoded dental)
+  const solutionIntro = customOfferDetails && customOfferDetails.length > 10
+    ? customOfferDetails
+    : `We built a 24/7 AI Receptionist specifically for ${formattedNiche}.`;
+
   // Anti-Fabrication Rule for Icebreaker:
   // Only reference verified research/enrichment facts.
   let icebreakerLine = "";
@@ -79,7 +84,7 @@ export async function generateCompliantOutreachEmail(lead, config = {}) {
     const hash = Math.abs(company.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0));
     subject = subjects[hash % subjects.length];
 
-    body = `${greeting}\n\n${icebreakerLine}It's easy for calls to slip to voicemail during peak hours or after-hours when the front desk is busy.\n\nWe built a 24/7 AI Receptionist specifically for ${formattedNiche}.\n\nIt answers FAQs, collects consultation details, and transfers urgent callers automatically so no inquiry is lost.\n\nMind if I send over a quick 2-minute demo?\n\nBest,\n${senderName}\n${senderRole}`;
+    body = `${greeting}\n\n${icebreakerLine}It's easy for calls to slip to voicemail during peak hours or after-hours when the front desk is busy.\n\n${solutionIntro}\n\nIt answers FAQs, collects consultation details, and transfers urgent callers automatically so no inquiry is lost.\n\nMind if I send over a quick 2-minute demo?\n\nBest,\n${senderName}\n${senderRole}`;
 
   } else if (step === 1) {
     // Step 2: Follow-Up Check-In (Day 3, NO LINKS!)
