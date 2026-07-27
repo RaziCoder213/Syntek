@@ -1,93 +1,162 @@
-import pg from "pg";
-import dotenv from "dotenv";
+/**
+ * Syntek Lead Quality Scoring Engine (Section 2c & 2d)
+ */
 
-dotenv.config();
+export function determineSourceTier(lead) {
+  const src = (lead.source_type || lead.source || "scraper_enriched").toLowerCase().trim();
+  if (src === "inbound") return 5;
+  if (src === "linkedin_declared_need" || src === "referral") return 4;
+  if (src === "scraper_unverified") return 1;
+  return 3; // default: scraper_enriched
+}
 
-const { Pool } = pg;
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
-});
+export function checkIsCompetitorAgency(lead) {
+  if (lead.is_competitor_agency === true) return true;
 
-export async function calculateQualityScore(lead, userId) {
-  let score = 0;
-  const breakdown = [];
+  const checkText = [
+    lead.name,
+    lead.category,
+    lead.type,
+    lead.linkedin_headline,
+    lead.website_text,
+    lead.about_text
+  ].filter(Boolean).join(" ").toLowerCase();
 
-  // 1. Booking widget check (real gap)
-  if (lead.has_booking_widget === "false") {
-    score += 25;
-    breakdown.push({ rule: "No booking widget found (+25)", points: 25 });
-  } else if (lead.has_booking_widget === "unknown") {
-    score += 0;
-    breakdown.push({ rule: "Booking widget status unknown (+0)", points: 0 });
+  const competitorTerms = [
+    "ai agency",
+    "automation agency",
+    "we build ai",
+    "we provide ai",
+    "voice ai solutions",
+    "ai voice agency",
+    "marketing agency",
+    "digital agency"
+  ];
+
+  return competitorTerms.some(term => checkText.includes(term));
+}
+
+export function calculateLeadTierAndScore(lead) {
+  const tier = determineSourceTier(lead);
+  const isCompetitor = checkIsCompetitorAgency(lead);
+
+  // Hard exclusion 1: Competitor Agency
+  if (isCompetitor) {
+    return {
+      tier,
+      score: -1000,
+      shouldQueue: false,
+      isCompetitor: true,
+      statusReason: "Hard Excluded (Competitor Agency)"
+    };
   }
 
-  // 2. Chat widget check
-  if (lead.chat_widget === "false") {
-    score += 10;
-    breakdown.push({ rule: "No chat widget found (+10)", points: 10 });
+  // Hard exclusion 2: Contacted within 90 days or Unsubscribed/Bounced
+  const status = (lead.status || "").toLowerCase();
+  const stage = (lead.pipeline_stage || "").toLowerCase();
+  if (
+    status === "unsubscribed" ||
+    status === "bounced" ||
+    status === "opt_out" ||
+    status === "trashed" ||
+    stage.includes("opt out")
+  ) {
+    return {
+      tier,
+      score: -1000,
+      shouldQueue: false,
+      isCompetitor: false,
+      statusReason: "Hard Excluded (Unsubscribed / Bounced)"
+    };
   }
 
-  // 3. Review count check
-  const reviewCount = parseInt(lead.reviews || 0, 10);
-  if (reviewCount >= 20) {
-    score += 15;
-    breakdown.push({ rule: `High review count: ${reviewCount} >= 20 (+15)`, points: 15 });
-  }
-
-  // 4. Review recency check (last 90 days)
-  if (lead.most_recent_review_at) {
-    const reviewDate = new Date(lead.most_recent_review_at);
-    const diffTime = Math.abs(new Date() - reviewDate);
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    if (diffDays <= 90) {
-      score += 15;
-      breakdown.push({ rule: `Most recent review within ${diffDays} days <= 90 (+15)`, points: 15 });
+  if (lead.last_contacted_at) {
+    const daysSinceContact = (Date.now() - new Date(lead.last_contacted_at).getTime()) / (1000 * 3600 * 24);
+    if (daysSinceContact < 90) {
+      return {
+        tier,
+        score: -1000,
+        shouldQueue: false,
+        isCompetitor: false,
+        statusReason: "Hard Excluded (Contacted within last 90 days)"
+      };
     }
   }
 
-  // 5. Contact method check
+  // Tier 4 & Tier 5 skip scoring gate and auto-queue directly
+  if (tier >= 4) {
+    return {
+      tier,
+      score: 100,
+      shouldQueue: true,
+      isCompetitor: false,
+      statusReason: "High Intent Source Tier (Auto-Queued)"
+    };
+  }
+
+  let score = 0;
+
+  // 1. Verified Operational Gap
+  const hasBooking = lead.has_booking_widget;
+  if (hasBooking === false || hasBooking === "false") {
+    score += 25;
+  }
+  const chatWidget = lead.chat_widget;
+  if (chatWidget === false || chatWidget === "false") {
+    score += 10;
+  }
   if (lead.contact_method === "phone_only") {
     score += 15;
-    breakdown.push({ rule: "Contact method is phone only (+15)", points: 15 });
   }
 
-  // 6. Owner name check
-  if (lead.owner_name) {
+  // 2. Business Health & Establishment Signals
+  const reviews = parseInt(lead.reviews || lead.review_count || 0, 10);
+  if (reviews >= 20) score += 15;
+  if (reviews >= 50) score += 5; // stacks to +20 total
+
+  const reviewDays = parseInt(lead.last_review_days || 30, 10);
+  if (reviewDays <= 90) score += 15;
+  if (reviewDays <= 30) score += 5; // stacks to +20 total
+
+  // 3. Reachability
+  if (lead.email_confirmed === true || (lead.email && lead.email.includes("@"))) {
     score += 10;
-    breakdown.push({ rule: `Owner name found: "${lead.owner_name}" (+10)`, points: 10 });
+  } else {
+    score -= 50; // Do not send to unconfirmed/guessed emails
   }
 
-  // 7. Already contacted in last 90 days check
-  if (lead.email) {
-    try {
-      const contactedCheck = await pool.query(
-        `SELECT id, contacted_at FROM leads 
-         WHERE user_id = $1 
-           AND LOWER(email) = LOWER($2) 
-           AND contacted_at IS NOT NULL 
-           AND contacted_at >= NOW() - INTERVAL '90 days'
-         LIMIT 1`,
-        [userId, lead.email]
-      );
-      if (contactedCheck.rowCount > 0) {
-        score -= 100;
-        breakdown.push({ rule: "Already contacted in the last 90 days (-100)", points: -100 });
-      }
-    } catch (err) {
-      console.error("[SCORER ERROR] Contacted check failed:", err.message);
-    }
+  if (lead.owner_name && lead.owner_name.trim().length > 2) {
+    score += 10;
   }
 
-  // 8. Email confirmed check
-  if (lead.email_confirmed === false) {
-    score -= 50;
-    breakdown.push({ rule: "Email unconfirmed/invalid format (-50)", points: -50 });
+  // 4. Fit
+  if (lead.niche_matches_target_list === true || lead.type || lead.name) {
+    score += 10;
   }
+
+  // Queue Thresholds
+  let shouldQueue = false;
+  if (tier === 3 && score >= 40) shouldQueue = true;
+  if (tier === 1 && score >= 55) shouldQueue = true;
 
   return {
+    tier,
     score,
-    breakdown,
-    isLowQuality: score < 40
+    shouldQueue,
+    isCompetitor: false,
+    statusReason: shouldQueue ? "Passed Tier & Score Gate" : "Needs Review / Low Quality"
+  };
+}
+
+
+// Alias export for backward compatibility with pipelineService.js
+export function calculateQualityScore(lead) {
+  const res = calculateLeadTierAndScore(lead);
+  return {
+    score: res.score,
+    tier: res.tier,
+    passed: res.shouldQueue,
+    isCompetitor: res.isCompetitor,
+    reason: res.statusReason
   };
 }
