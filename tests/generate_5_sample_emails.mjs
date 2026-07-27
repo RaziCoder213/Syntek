@@ -1,15 +1,31 @@
+import dotenv from 'dotenv';
+dotenv.config();
+
 import { generateCompliantOutreachEmail } from '../services/aiCopywriterService.js';
 import { formatCompliantEmailHtml } from '../services/sequenceEngine.js';
+import pg from 'pg';
 
 console.log('================ SECTION 2: 5 REAL SAMPLE OUTREACH EMAILS ================');
 
-const config = {
-  sender_name: "Muhammad Razi",
-  sender_role: "Founder, Noryvex",
-  company_address: "100 Congress Ave, Austin, TX 78701"
-};
-
 async function run5SampleEmails() {
+  const dbUrl = process.env.DATABASE_URL;
+  let liveSettings = {};
+  if (dbUrl) {
+    const pool = new pg.Pool({ connectionString: dbUrl, ssl: { rejectUnauthorized: false } });
+    try {
+      const settingsRes = await pool.query("SELECT * FROM campaign_settings LIMIT 1");
+      liveSettings = settingsRes.rows[0] || {};
+    } finally {
+      await pool.end();
+    }
+  }
+
+  const config = {
+    sender_name: liveSettings.sender_name || "Muhammad Razi",
+    sender_role: liveSettings.sender_role || "Founder, Noryvex",
+    company_address: liveSettings.company_address || "Karachi, Pakistan"
+  };
+
   // 1. Tier-3 Scraped Lead with Verified Gap (has_booking_widget = false)
   const lead1 = {
     name: "Highland Dental Care",

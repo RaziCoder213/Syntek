@@ -48,14 +48,14 @@ function runSequenceEngineTest() {
   // 3. Test Compliance Footer Injection
   const html = formatCompliantEmailHtml("Hi Dr. Smith,\n\nQuick question about your practice.\n\nBest,\nMuhammad", {
     sender_name: "Muhammad Razi",
-    company_address: "100 Congress Ave, Austin, TX 78701"
+    company_address: "Karachi, Pakistan"
   });
 
-  if (!html.includes("Noryvex Automation · 100 Congress Ave, Austin, TX 78701")) {
+  if (!html.includes("Noryvex Automation · Karachi, Pakistan")) {
     console.error('❌ FAIL: Physical address missing from compliance footer!');
     passed = false;
   } else {
-    console.log('✅ PASS: Compliance footer contains mandatory physical address.');
+    console.log('✅ PASS: Compliance footer contains mandatory physical address (Karachi, Pakistan).');
   }
 
   if (!html.includes("Unsubscribe / Opt-out")) {

@@ -44,8 +44,8 @@ async function runFullEngineTestSuite() {
     console.log('✅ PASS: Step 1 contains zero links.');
   }
 
-  // TEST 2: Competitor Agency Pre-Filter & Quality Scorer
-  console.log('\n--- TEST 2: Competitor Agency Pre-Filter & Quality Scorer ---');
+  // TEST 2: Competitor Agency & Replied Lead Hard Exclusion
+  console.log('\n--- TEST 2: Competitor Agency & Replied Lead Hard Exclusion ---');
   const competitorLead = {
     name: "Apex AI Solutions",
     type: "AI Agency",
@@ -59,6 +59,15 @@ async function runFullEngineTestSuite() {
     passed = false;
   } else {
     console.log('✅ PASS: Competitor agency pre-filter hard-excluded competitor with score -1000.');
+  }
+
+  const repliedLead = { status: "replied", source_tier: 3 };
+  const repliedResult = calculateLeadTierAndScore(repliedLead);
+  if (repliedResult.score !== -1000 || repliedResult.shouldQueue !== false) {
+    console.error('❌ FAIL: Replied lead failed to hard-exclude!');
+    passed = false;
+  } else {
+    console.log('✅ PASS: Replied lead hard-excluded with score -1000.');
   }
 
   const inboundLead = { source_type: "inbound" };
@@ -84,19 +93,19 @@ async function runFullEngineTestSuite() {
 
   const compliantFooterHtml = formatCompliantEmailHtml("Test email body", {
     sender_name: "Muhammad Razi",
-    company_address: "100 Congress Ave, Austin, TX 78701"
+    company_address: "Karachi, Pakistan"
   });
 
-  if (!compliantFooterHtml.includes("100 Congress Ave, Austin, TX 78701") || !compliantFooterHtml.includes("Unsubscribe / Opt-out")) {
-    console.error('❌ FAIL: Compliance footer physical address or opt-out link missing!');
+  if (!compliantFooterHtml.includes("Karachi, Pakistan") || !compliantFooterHtml.includes("Unsubscribe / Opt-out")) {
+    console.error('❌ FAIL: Compliance footer physical address (Karachi, Pakistan) or opt-out link missing!');
     passed = false;
   } else {
-    console.log('✅ PASS: Compliance footer physical address and opt-out link verified.');
+    console.log('✅ PASS: Compliance footer physical address (Karachi, Pakistan) and opt-out link verified.');
   }
 
   // SUMMARY
   if (passed) {
-    console.log('\n🎉 ALL OUTREACH ENGINE SUITE TESTS PASSED 100%!');
+    console.log('\n🎉 ALL OUTREACH ENGINE SUITE TESTS PASSED 100%! All rows ✅');
   } else {
     console.error('\n❌ TEST SUITE FAILED!');
     process.exit(1);
