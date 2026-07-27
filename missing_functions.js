@@ -45,13 +45,13 @@
 
   if (templateIndex === 0) {
     subject = `Quick idea for ${lead.name}`;
-    body = `Hi,\n\nI was looking at ${lead.name}'s website and noticed a couple of opportunities to capture more appointments from your search traffic.\n\nI build custom web apps, SaaS dashboards, and chat widgets. You can see some of my work here: ${portfolioUrl || "noryvex.com"}\n\nWould you be open to a 10-second sketch of what a modern booking widget looks like on your site?\n\nBest,\n${senderName}`;
+    body = `Hi,\n\nI was looking at ${lead.name}'s website and noticed a couple of opportunities to capture more appointments from your search traffic.\n\nI build custom web apps, SaaS dashboards, and chat widgets. You can see some of my work here: ${portfolioUrl || "trynoryvex.com"}\n\nWould you be open to a 10-second sketch of what a modern booking widget looks like on your site?\n\nBest,\n${senderName}`;
   } else if (templateIndex === 1) {
     subject = `${lead.name} scheduling`;
     body = `Hi,\n\nQuick question ΓÇö does your team manually schedule all reservations over the phone, or are you looking to automate booking this quarter?\n\nI ask because I help startups and local clinics/cafes implement custom automated schedulers that sync with their calendar automatically.\n\nShould I send over a quick 2-minute preview of how it would work for ${lead.name}?\n\nBest regards,\n${senderName}`;
   } else if (templateIndex === 2) {
     subject = `question about ${lead.name}'s website`;
-    body = `Hi,\n\nNoticed the mobile version of ${lead.name}'s website has a few issues with reservation button alignments, which might be losing you bookings.\n\nI'm a developer and I build high-performance custom web applications and reservation tools. Here's my portfolio: ${portfolioUrl || "noryvex.com"}\n\nShould I send over a quick 30-second video of the layout tweaks I'd suggest?\n\nThanks,\n${senderName}`;
+    body = `Hi,\n\nNoticed the mobile version of ${lead.name}'s website has a few issues with reservation button alignments, which might be losing you bookings.\n\nI'm a developer and I build high-performance custom web applications and reservation tools. Here's my portfolio: ${portfolioUrl || "trynoryvex.com"}\n\nShould I send over a quick 30-second video of the layout tweaks I'd suggest?\n\nThanks,\n${senderName}`;
   } else if (templateIndex === 3) {
     subject = `quick question for ${lead.name}`;
     body = `Hi,\n\nIf adding new digital reservation features or automating patient/client booking is on your roadmap for ${lead.name} this year, I'd love to connect.\n\nI help owners build custom reservation bots and customer portals from idea to launch.\n\nWorth a 2-minute introductory chat this week?\n\nCheers,\n${senderName}`;

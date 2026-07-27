@@ -11,7 +11,7 @@ function formatProfessionalEmailHtml(bodyText, config = {}) {
   const senderRole = config.sender_role || "Independent Developer";
   const companyName = config.company_name || "";
   const useCompany = config.use_company_branding || false;
-  const portfolioUrl = config.portfolio_url || "noryvex.com";
+  const portfolioUrl = config.portfolio_url || "trynoryvex.com";
   const socialLinkedin = config.social_linkedin || "";
   const socialTwitter = config.social_twitter || "";
 

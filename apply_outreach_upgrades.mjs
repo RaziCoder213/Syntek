@@ -44,7 +44,7 @@ const newGenerateDeveloperOutreach = `async function generateDeveloperOutreach(l
   const senderRole = config.sender_role || "Independent Developer";
   const companyName = config.company_name || "";
   const useCompany = config.use_company_branding || false;
-  const portfolioUrl = config.portfolio_url || "noryvex.com";
+  const portfolioUrl = config.portfolio_url || "trynoryvex.com";
 
   // Decision maker greeting
   const recipientName = lead.owner_name ? lead.owner_name.split(' ')[0] : "";
