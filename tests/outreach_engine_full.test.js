@@ -1,4 +1,4 @@
-import { generateCompliantOutreachEmail, formatNicheName } from '../services/aiCopywriterService.js';
+import { generateCompliantOutreachEmail, formatNicheName, getMasterDescription } from '../services/aiCopywriterService.js';
 import { calculateLeadTierAndScore, checkIsCompetitorAgency } from '../services/scoringService.js';
 import { isLeadDueForNextStep, calculateGraduatedCap, formatCompliantEmailHtml } from '../services/sequenceEngine.js';
 
@@ -42,6 +42,16 @@ async function runFullEngineTestSuite() {
     passed = false;
   } else {
     console.log('✅ PASS: Step 1 contains zero links.');
+  }
+
+  const cafeMasterDesc = getMasterDescription("cafe_restaurant");
+  const forbiddenWords = ["patient", "dental", "clinic", "hygienist"];
+  const foundForbidden = forbiddenWords.filter(w => cafeMasterDesc.toLowerCase().includes(w));
+  if (foundForbidden.length > 0) {
+    console.error(`❌ FAIL: Master description for cafe_restaurant contains forbidden words: ${foundForbidden.join(', ')}`);
+    passed = false;
+  } else {
+    console.log('✅ PASS: Master description for cafe_restaurant contains zero dental/patient/clinic words.');
   }
 
   // TEST 2: Competitor Agency & Replied Lead Hard Exclusion

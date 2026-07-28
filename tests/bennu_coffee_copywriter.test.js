@@ -1,8 +1,10 @@
-import { generateCompliantOutreachEmail, formatNicheName } from '../services/aiCopywriterService.js';
+import { generateCompliantOutreachEmail, formatNicheName, getMasterDescription } from '../services/aiCopywriterService.js';
 
 console.log('================ BENNU COFFEE COPYWRITER UNIT TEST ================');
 
 async function runBennuCoffeeTest() {
+  let passed = true;
+
   const bennuCoffeeLead = {
     name: "Bennu Coffee",
     type: "Cafe",
@@ -19,8 +21,6 @@ async function runBennuCoffeeTest() {
 
   console.log('\nGenerated Subject:', emailResult.subject);
   console.log('Generated Body:\n' + emailResult.body);
-
-  let passed = true;
 
   // Check 1: Does NOT contain "dental" for Bennu Coffee
   if (emailResult.body.toLowerCase().includes("dental")) {
@@ -58,6 +58,19 @@ async function runBennuCoffeeTest() {
   console.log(`ℹ️ Word count: ${emailResult.wordCount} words.`);
   if (emailResult.wordCount > 100) {
     console.warn('⚠️ WARNING: Word count slightly over 100 words.');
+  }
+
+  // Check 6: Master Description Regression Test for cafe_restaurant
+  const cafeMasterDesc = getMasterDescription("cafe_restaurant");
+  console.log('\nMaster Description for cafe_restaurant:\n' + cafeMasterDesc);
+  const forbiddenWords = ["patient", "dental", "clinic", "hygienist"];
+  const foundForbidden = forbiddenWords.filter(w => cafeMasterDesc.toLowerCase().includes(w));
+
+  if (foundForbidden.length > 0) {
+    console.error(`❌ FAIL: Master description for cafe_restaurant contains forbidden dental words: ${foundForbidden.join(', ')}`);
+    passed = false;
+  } else {
+    console.log('✅ PASS: Master description for cafe_restaurant contains zero instances of patient, dental, clinic, or hygienist.');
   }
 
   if (passed) {

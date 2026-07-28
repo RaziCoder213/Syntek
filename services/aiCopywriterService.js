@@ -1,6 +1,6 @@
 /**
  * Syntek AI Copywriter Service (Gemini Engine)
- * Enforces Anti-Fabrication Rules, Niche-Aware Framing, and Clean Formatting.
+ * Enforces Anti-Fabrication Rules, Niche-Aware Framing, Master Description Template, and Clean Formatting.
  */
 
 // Forbidden AI-tell phrases that will trigger auto-sanitization
@@ -18,21 +18,124 @@ const FORBIDDEN_AI_PHRASES = [
 ];
 
 /**
+ * NICHE VARIABLE MAPPING (Config dictionary for master description & sequence engine)
+ * Keyed by lead.niche or normalized niche group.
+ */
+export const NICHE_MAPPING = {
+  dental_medical: {
+    niche_plural: "dental and medical clinics",
+    staff_role_plural: "front desk staff",
+    primary_activity: "serving patients",
+    inquiry_type: "patient inquiry",
+    service_type: "dental services, accepted insurances",
+    booking_type: "appointment or consultation",
+    contact_details_type: "patient",
+    core_work: "patient care"
+  },
+  cafe_restaurant: {
+    niche_plural: "cafes and restaurants",
+    staff_role_plural: "staff",
+    primary_activity: "serving customers",
+    inquiry_type: "order or reservation",
+    service_type: "menu, hours, catering",
+    booking_type: "reservation or order",
+    contact_details_type: "customer",
+    core_work: "customer experience"
+  },
+  home_services: {
+    niche_plural: "home service businesses",
+    staff_role_plural: "your team",
+    primary_activity: "on-site jobs",
+    inquiry_type: "service request",
+    service_type: "services, pricing, availability",
+    booking_type: "service or quote",
+    contact_details_type: "customer",
+    core_work: "the job at hand"
+  },
+  salon_spa: {
+    niche_plural: "salons and spas",
+    staff_role_plural: "front desk staff",
+    primary_activity: "serving clients",
+    inquiry_type: "booking inquiry",
+    service_type: "services, pricing",
+    booking_type: "appointment",
+    contact_details_type: "client",
+    core_work: "client care"
+  },
+  legal_services: {
+    niche_plural: "law firms and legal practices",
+    staff_role_plural: "legal staff",
+    primary_activity: "serving clients",
+    inquiry_type: "client inquiry",
+    service_type: "legal services, consultation options",
+    booking_type: "consultation or case inquiry",
+    contact_details_type: "client",
+    core_work: "client advocacy"
+  },
+  auto_services: {
+    niche_plural: "auto repair shops",
+    staff_role_plural: "your team",
+    primary_activity: "working on vehicles",
+    inquiry_type: "repair or service inquiry",
+    service_type: "services, pricing, estimates",
+    booking_type: "service appointment or estimate",
+    contact_details_type: "customer",
+    core_work: "vehicle repairs"
+  },
+  general_small_business: {
+    niche_plural: "small businesses",
+    staff_role_plural: "your team",
+    primary_activity: "serving customers",
+    inquiry_type: "customer inquiry",
+    service_type: "services",
+    booking_type: "appointment or inquiry",
+    contact_details_type: "customer",
+    core_work: "their actual work"
+  }
+};
+
+/**
+ * Resolve raw niche string to mapping key.
+ * Never silently defaults to dental_medical — uses general_small_business for unmapped niches.
+ */
+export function resolveNicheKey(rawNiche = "") {
+  if (!rawNiche || typeof rawNiche !== "string") return "general_small_business";
+  const lower = rawNiche.toLowerCase().trim();
+
+  if (lower.includes("dental") || lower.includes("dentist") || lower.includes("clinic") || lower.includes("medical")) return "dental_medical";
+  if (lower.includes("cafe") || lower.includes("coffee") || lower.includes("restaurant") || lower.includes("bakery") || lower.includes("diner")) return "cafe_restaurant";
+  if (lower.includes("plumb") || lower.includes("hvac") || lower.includes("roof") || lower.includes("electric") || lower.includes("home service") || lower.includes("cleaner") || lower.includes("handyman")) return "home_services";
+  if (lower.includes("salon") || lower.includes("spa") || lower.includes("hair") || lower.includes("barber") || lower.includes("beauty") || lower.includes("nail")) return "salon_spa";
+  if (lower.includes("law") || lower.includes("legal") || lower.includes("attorney")) return "legal_services";
+  if (lower.includes("auto") || lower.includes("car") || lower.includes("repair") || lower.includes("mechanic")) return "auto_services";
+
+  return "general_small_business";
+}
+
+/**
+ * Retrieve niche variables object.
+ */
+export function getNicheVariables(nicheInput = "") {
+  const key = resolveNicheKey(nicheInput);
+  return NICHE_MAPPING[key] || NICHE_MAPPING.general_small_business;
+}
+
+/**
+ * MASTER DESCRIPTION TEMPLATE GENERATOR
+ * Source of truth for outreach emails, website Solutions page, and llms.txt.
+ */
+export function getMasterDescription(nicheInput = "") {
+  const vars = getNicheVariables(nicheInput);
+
+  return `Our AI Receptionist is a 24/7 virtual assistant built for ${vars.niche_plural}. It answers every incoming call, even when your ${vars.staff_role_plural} are busy with ${vars.primary_activity}, so you never miss a ${vars.inquiry_type} or booking. It answers common questions about your ${vars.service_type}, hours, location, and other FAQs using your business's own information. It can also take ${vars.booking_type} inquiries, collect ${vars.contact_details_type} details, and qualify callers before passing them to your team. Every conversation can be automatically saved to Google Sheets or your CRM. If a caller needs to speak with someone directly, the AI transfers the call to your staff. Available 24/7, it reduces missed calls and saves your front desk time — without replacing your team.`;
+}
+
+/**
  * Cleanly format niche name for natural sentence flow.
- * E.g., "Dental Practice" -> "dental practices", "Cafe" -> "coffee shops & cafes", "Clinics" -> "clinics"
  */
 export function formatNicheName(nicheStr = "") {
-  if (!nicheStr) return "local businesses";
-  const lower = nicheStr.toLowerCase().trim();
-
-  if (lower.includes("dental") || lower.includes("dentist")) return "dental practices";
-  if (lower.includes("cafe") || lower.includes("coffee")) return "coffee shops & cafes";
-  if (lower.includes("clinic") || lower.includes("medical")) return "medical & wellness clinics";
-  if (lower.includes("law") || lower.includes("legal") || lower.includes("attorney")) return "law firms";
-  if (lower.includes("plumb") || lower.includes("hvac") || lower.includes("roof")) return "home service providers";
-  if (lower.includes("agency") || lower.includes("marketing")) return "growing businesses";
-
-  return lower.endsWith("s") ? lower : `${lower}s`;
+  const vars = getNicheVariables(nicheStr);
+  return vars.niche_plural;
 }
 
 /**
@@ -47,18 +150,17 @@ export async function generateCompliantOutreachEmail(lead, config = {}) {
   const greeting = recipientName ? `Hi ${recipientName},` : "Hi there,";
   const company = lead.name || "your team";
   const step = lead.sequence_step || 0;
-  const formattedNiche = formatNicheName(lead.type || lead.niche || config.niche);
+  const nicheVars = getNicheVariables(lead.type || lead.niche || config.niche);
 
   // Dynamic Solution Intro Line: Niche-aware per lead (never hardcoded dental)
   const solutionIntro = customOfferDetails && customOfferDetails.length > 10
     ? customOfferDetails
-    : `We built a 24/7 AI Receptionist specifically for ${formattedNiche}.`;
+    : `Our AI Receptionist is a 24/7 virtual assistant built for ${nicheVars.niche_plural}.`;
 
   // Anti-Fabrication Rule for Icebreaker:
   // Only reference verified research/enrichment facts.
   let icebreakerLine = "";
   if (lead.source_type === "linkedin_declared_need" && lead.linkedin_post_text) {
-    // Personalize from public post text directly
     const snippet = lead.linkedin_post_text.slice(0, 80).replace(/\n/g, " ").trim();
     icebreakerLine = `Saw your post about ${snippet}...\n\n`;
   } else if (
@@ -84,41 +186,36 @@ export async function generateCompliantOutreachEmail(lead, config = {}) {
     const hash = Math.abs(company.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0));
     subject = subjects[hash % subjects.length];
 
-    body = `${greeting}\n\n${icebreakerLine}It's easy for calls to slip to voicemail during peak hours or after-hours when the front desk is busy.\n\n${solutionIntro}\n\nIt answers FAQs, collects consultation details, and transfers urgent callers automatically so no inquiry is lost.\n\nMind if I send over a quick 2-minute demo?\n\nBest,\n${senderName}\n${senderRole}`;
+    body = `${greeting}\n\n${icebreakerLine}It's easy for calls to slip to voicemail during peak hours or after-hours when ${nicheVars.staff_role_plural} are busy with ${nicheVars.primary_activity}.\n\n${solutionIntro}\n\nIt answers FAQs about your ${nicheVars.service_type}, collects ${nicheVars.contact_details_type} details, and transfers urgent callers automatically so no ${nicheVars.inquiry_type} is lost.\n\nMind if I send over a quick 2-minute demo?\n\nBest,\n${senderName}\n${senderRole}`;
 
   } else if (step === 1) {
     // Step 2: Follow-Up Check-In (Day 3, NO LINKS!)
     subject = `following up`;
-    body = `${greeting}\n\nFollowing up on my note from earlier this week.\n\nDid you have a chance to see if missed after-hours calls or booking inquiries are something ${company} is looking to solve right now?\n\nMind if I send over a quick 2-minute preview?\n\nBest,\n${senderName}\n${senderRole}`;
+    body = `${greeting}\n\nFollowing up on my note from earlier this week.\n\nDid you have a chance to see if missed calls or ${nicheVars.inquiry_type} backlog are something ${company} is looking to solve right now?\n\nMind if I send over a quick 2-minute preview?\n\nBest,\n${senderName}\n${senderRole}`;
 
   } else if (step === 2) {
     // Step 3: Show-and-Tell (Day 7, EXACTLY ONE LINK ALLOWED!)
     const demoLink = config.is_trial_campaign ? "https://trynoryvex.com/#trial" : "https://trynoryvex.com/#demo";
     subject = `how this actually works`;
-    body = `${greeting}\n\nThought it would be easier to show rather than explain.\n\nHere's a 90-second demo of how the AI receptionist handles incoming calls and books appointments automatically:\n${demoLink}\n\nWould this be useful for ${company}?\n\nLet me know if you'd rather not hear from me again.\n\nBest,\n${senderName}\n${senderRole}`;
+    body = `${greeting}\n\nThought it would be easier to show rather than explain.\n\nHere's a 90-second demo of how the AI receptionist handles incoming ${nicheVars.inquiry_type}s and takes ${nicheVars.booking_type} details automatically:\n${demoLink}\n\nWould this be useful for ${company}?\n\nLet me know if you'd rather not hear from me again.\n\nBest,\n${senderName}\n${senderRole}`;
 
   } else {
     // Step 4: Breakup Email (Day 12, NO LINKS!)
     subject = `should I close the loop?`;
-    body = `${greeting}\n\nI haven't heard back, so I assume automated call answering and appointment booking isn't a priority for ${company} right now.\n\nI'll close your file and won't bug you again. If things change down the road, feel free to reach out anytime.\n\nBest,\n${senderName}\n${senderRole}`;
+    body = `${greeting}\n\nI haven't heard back, so I assume automated call answering and ${nicheVars.booking_type} capture isn't a priority for ${company} right now.\n\nI'll close your file and won't bug you again. If things change down the road, feel free to reach out anytime.\n\nBest,\n${senderName}\n${senderRole}`;
   }
 
   // --- SANITIZE & VERIFY HARD RULES ---
-  // Rule 1: No exclamation marks
   body = body.replace(/!/g, ".");
 
-  // Rule 2: Remove forbidden AI-tell phrases
   FORBIDDEN_AI_PHRASES.forEach(regex => {
     body = body.replace(regex, "");
   });
 
-  // Rule 3: Fix double newlines / artifacts
   body = body.replace(/\n{3,}/g, "\n\n").trim();
 
-  // Rule 4: Word count check (< 100 words body)
   const wordCount = body.split(/\s+/).length;
   if (wordCount > 120) {
-    // Trim excess fluff
     console.warn(`[AI COPYWRITER] Body exceeds 120 words (${wordCount} words). Trimming.`);
   }
 

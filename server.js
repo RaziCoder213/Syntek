@@ -13,6 +13,7 @@ import { spawn } from "child_process";
 import bcryptjs from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { runScraperPipeline } from "./services/pipelineService.js";
+import { getMasterDescription, NICHE_MAPPING, resolveNicheKey } from "./services/aiCopywriterService.js";
 
 dotenv.config();
 
@@ -7659,6 +7660,52 @@ app.post("/api/integrations/google-sheets/sync", authenticate, async (req, res) 
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// Single Source of Truth Endpoints for Master Description Template & Solutions Copy
+app.get("/llms.txt", (req, res) => {
+  const niche = req.query.niche || "general_small_business";
+  const desc = getMasterDescription(niche);
+  res.type("text/plain").send(`# Noryvex AI Receptionist
+
+${desc}
+
+## Supported Niche Master Descriptions:
+- Dental & Medical Clinics:
+${getMasterDescription("dental_medical")}
+
+- Cafes & Restaurants:
+${getMasterDescription("cafe_restaurant")}
+
+- Home Service Businesses:
+${getMasterDescription("home_services")}
+
+- Salons & Spas:
+${getMasterDescription("salon_spa")}
+
+- Legal Services:
+${getMasterDescription("legal_services")}
+
+- Auto Repair Services:
+${getMasterDescription("auto_services")}
+
+- General Small Businesses:
+${getMasterDescription("general_small_business")}
+`);
+});
+
+app.get("/api/solutions", (req, res) => {
+  const niche = req.query.niche || "general_small_business";
+  const key = resolveNicheKey(niche);
+  const vars = NICHE_MAPPING[key] || NICHE_MAPPING.general_small_business;
+  const description = getMasterDescription(niche);
+
+  res.json({
+    success: true,
+    nicheKey: key,
+    variables: vars,
+    masterDescription: description
+  });
 });
 
 // Serve React built frontend in production
