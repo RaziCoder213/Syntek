@@ -25,41 +25,8 @@ if (process.env.USERPROFILE) {
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
-// Global DNS lookup override using async c-ares Resolver to prevent thread pool exhaustion and EAI_AGAIN on Windows
+// System DNS lookup
 const originalLookup = dns.lookup;
-const customResolver = new dns.promises.Resolver();
-try {
-  customResolver.setServers(["1.1.1.1", "8.8.8.8"]);
-} catch (e) {
-  console.warn("Failed to set custom DNS servers:", e.message);
-}
-
-dns.lookup = function(hostname, options, callback) {
-  if (typeof options === "function") {
-    callback = options;
-    options = {};
-  }
-  const all = options && options.all;
-  if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || /^(?:\d{1,3}\.){3}\d{1,3}$/.test(hostname)) {
-    return originalLookup(hostname, options, callback);
-  }
-  customResolver.resolve4(hostname)
-    .then((addresses) => {
-      if (addresses && addresses.length > 0) {
-        if (all) {
-          const results = addresses.map(addr => ({ address: addr, family: 4 }));
-          callback(null, results);
-        } else {
-          callback(null, addresses[0], 4);
-        }
-      } else {
-        originalLookup(hostname, options, callback);
-      }
-    })
-    .catch(() => {
-      originalLookup(hostname, options, callback);
-    });
-};
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
