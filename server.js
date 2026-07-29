@@ -5270,105 +5270,11 @@ async function getAvailableOutbox(userId, config) {
 
 
 function formatProfessionalEmailHtml(bodyText, config = {}) {
-  if (!bodyText) return "";
-  const senderName = config.sender_name || "Muhammad Razi";
-  const senderRole = config.sender_role || "Independent Developer";
-  const companyName = config.company_name || "";
-  const useCompany = config.use_company_branding || false;
-  const portfolioUrl = config.portfolio_url || "trynoryvex.com";
-  const socialLinkedin = config.social_linkedin || "";
-  const socialTwitter = config.social_twitter || "";
-
-  let signatureTitle = senderRole;
-  if (useCompany && companyName) {
-    signatureTitle = `${senderRole} · ${companyName}`;
-  }
-
-  // Split plain text into paragraphs
-  const paragraphs = bodyText
-    .split(/\n\s*\n/)
-    .map(p => p.trim())
-    .filter(p => p.length > 0);
-
-  const mainParagraphsHtml = paragraphs.map(p => {
-    const htmlPara = p.replace(/\n/g, "<br/>");
-    return `<p style="margin: 0 0 16px 0; font-size: 15px; line-height: 1.65; color: #1e293b;">${htmlPara}</p>`;
-  }).join("");
-
-  return `
-<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 15px; line-height: 1.65; color: #1e293b; max-width: 580px; margin: 0 auto; padding: 24px 16px; background-color: #ffffff;">
-  ${mainParagraphsHtml}
-
-  <!-- Executive Professional Signature Block -->
-  <div style="margin-top: 32px; padding-top: 20px; border-top: 1px solid #e2e8f0;">
-    <div style="font-weight: 700; font-size: 16px; color: #0f172a; letter-spacing: -0.01em;">${senderName}</div>
-    <div style="font-size: 13.5px; color: #64748b; margin-top: 2px; font-weight: 500;">${signatureTitle}</div>
-    ${portfolioUrl ? `<div style="margin-top: 8px;"><a href="${portfolioUrl.startsWith('http') ? portfolioUrl : 'https://' + portfolioUrl}" target="_blank" style="color: #2563eb; text-decoration: none; font-size: 13.5px; font-weight: 600;">🌐 ${portfolioUrl}</a></div>` : ''}
-    ${(socialLinkedin || socialTwitter) ? `
-      <div style="margin-top: 10px; font-size: 12.5px; color: #94a3b8; display: flex; gap: 12px;">
-        ${socialLinkedin ? `<a href="${socialLinkedin}" target="_blank" style="color: #475569; text-decoration: none;">💼 LinkedIn</a>` : ''}
-        ${socialTwitter ? `<a href="${socialTwitter}" target="_blank" style="color: #475569; text-decoration: none;">🐦 Twitter/X</a>` : ''}
-      </div>
-    ` : ''}
-  </div>
-</div>
-  `.trim();
+  return formatCompliantEmailHtml(bodyText, config);
 }
 
 async function generateDeveloperOutreach(lead, config) {
-  const senderName = config.sender_name || "Muhammad Razi";
-  const senderRole = config.sender_role || "Founder, Noryvex";
-  
-  const recipientName = lead.owner_name ? lead.owner_name.split(' ')[0] : "";
-  const greeting = recipientName ? `Hi ${recipientName},` : "Hi there,";
-  const company = lead.name || "your team";
-  const step = lead.sequence_step || 0;
-
-  // Rule 1: Icebreaker — only use if verified real detail exists, else skip cleanly
-  let icebreakerLine = "";
-  if (lead.personalized_icebreaker && 
-      !lead.personalized_icebreaker.includes("NO_VERIFIED_DETAIL") && 
-      !lead.personalized_icebreaker.includes("great local presence") && 
-      lead.personalized_icebreaker.length > 15) {
-    icebreakerLine = lead.personalized_icebreaker.trim() + "\n\n";
-  }
-
-  // STEP 1: Cold Outreach (NO LINKS!)
-  if (step === 0) {
-    const subjects = [
-      `quick question about ${company}`,
-      `${company} + booking`,
-      `saw ${company} — one question`
-    ];
-    const hash = Math.abs(company.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0));
-    const subject = subjects[hash % subjects.length];
-
-    const body = `${greeting}\n\n${icebreakerLine}It's easy for calls to slip to voicemail during peak hours or after-hours when the front desk is busy.\n\nWe built a 24/7 AI Receptionist specifically for ${lead.type || "dental & medical practices"}.\n\nIt answers FAQs, collects consultation details, and transfers urgent callers automatically so no high-value inquiry is lost.\n\nMind if I send over a quick 2-minute demo?\n\nBest,\n${senderName}\n${senderRole}`;
-
-    return { subject, body };
-  }
-
-  // STEP 2: Follow-up Check-in (NO LINKS!)
-  if (step === 1) {
-    const subject = `following up`;
-    const body = `${greeting}\n\nFollowing up on my note from earlier this week.\n\nDid you have a chance to see if missed after-hours calls or booking inquiries are something ${company} is looking to solve right now?\n\nMind if I send over a quick 2-minute preview?\n\nBest,\n${senderName}\n${senderRole}`;
-
-    return { subject, body };
-  }
-
-  // STEP 3: Show-and-Tell (Demo Link Allowed!)
-  if (step === 2) {
-    const subject = `how this actually works`;
-    const body = `${greeting}\n\nThought it would be easier to show rather than explain.\n\nHere's a 90-second demo of how the AI receptionist handles incoming calls and books appointments automatically:\nhttps://trynoryvex.com/#demo\n\nWould this be useful for ${company}?\n\nBest,\n${senderName}\n${senderRole}`;
-
-    return { subject, body };
-  }
-
-  // STEP 4: Breakup Email (NO LINKS!)
-  const subject = `should I close the loop?`;
-  const body = `${greeting}\n\nI haven't heard back, so I assume automated call answering and appointment booking isn't a priority for ${company} right now.\n\nI'll close your file and won't bug you again. If things change down the road, feel free to reach out anytime.\n\nBest,\n${senderName}\n${senderRole}`;
-
-  return { subject, body };
+  return generateCompliantOutreachEmail(lead, config);
 }
 
 async function syncUserInbox(userId, config) {

@@ -19,12 +19,11 @@ export function generateUnsubscribeToken(leadId, secret = process.env.JWT_SECRET
 
 /**
  * Compliance Footer Injector (Section 5)
- * Server-side auto-appended real physical address and opt-out link
+ * Server-side auto-appended real physical address and opt-out link.
+ * Clean, natural plain-text HTML styling with NO white card container.
  */
 export function formatCompliantEmailHtml(bodyText, config = {}) {
   if (!bodyText) return "";
-  const senderName = config.sender_name || "Muhammad Razi";
-  const senderRole = config.sender_role || "Founder, Noryvex";
   const companyAddress = config.company_address || "Karachi, Pakistan";
 
   const paragraphs = bodyText
@@ -38,22 +37,13 @@ export function formatCompliantEmailHtml(bodyText, config = {}) {
   }).join("");
 
   return `
-<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 15px; line-height: 1.65; color: #1e293b; max-width: 580px; margin: 0 auto; padding: 24px 16px; background-color: #ffffff;">
+<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 15px; line-height: 1.65; color: #1e293b; max-width: 600px; padding: 8px 0;">
   ${mainParagraphsHtml}
 
-  <!-- Executive Signature Block -->
-  <div style="margin-top: 28px; padding-top: 18px; border-top: 1px solid #e2e8f0;">
-    <div style="font-weight: 700; font-size: 15.5px; color: #0f172a;">${senderName}</div>
-    <div style="font-size: 13px; color: #475569; margin-top: 2px; font-weight: 500;">${senderRole}</div>
-    <div style="margin-top: 6px; font-size: 13px; color: #2563eb;">
-      <a href="https://trynoryvex.com" target="_blank" style="color: #2563eb; text-decoration: none; font-weight: 600;">trynoryvex.com</a>
-    </div>
-  </div>
-
   <!-- Mandatory Compliance Physical Address & Opt-out Footer -->
-  <div style="margin-top: 28px; padding-top: 14px; border-top: 1px solid #f1f5f9; text-align: center; font-size: 11px; color: #94a3b8; line-height: 1.5;">
+  <div style="margin-top: 32px; padding-top: 14px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #64748b; line-height: 1.5;">
     Noryvex Automation · ${companyAddress}<br/>
-    <a href="mailto:optout@trynoryvex.com?subject=Unsubscribe" style="color: #94a3b8; text-decoration: underline;">Unsubscribe / Opt-out</a>
+    <a href="mailto:optout@trynoryvex.com?subject=Unsubscribe" style="color: #64748b; text-decoration: underline;">Unsubscribe / Opt-out</a>
   </div>
 </div>
   `.trim();
@@ -79,11 +69,13 @@ export function isLeadDueForNextStep(lead) {
 
   if (!lead.last_contacted_at) return true;
 
-  const daysSinceLast = (Date.now() - new Date(lead.last_contacted_at).getTime()) / (1000 * 3600 * 24);
+  const now = new Date();
+  const lastContact = new Date(lead.last_contacted_at);
+  const daysDiff = (now - lastContact) / (1000 * 60 * 60 * 24);
 
-  if (step === 1 && daysSinceLast >= 3) return true;
-  if (step === 2 && daysSinceLast >= 4) return true; // 3 + 4 = 7 days cumulative
-  if (step === 3 && daysSinceLast >= 5) return true; // 7 + 5 = 12 days cumulative
+  if (step === 1) return daysDiff >= 3;
+  if (step === 2) return daysDiff >= 4; // 3 + 4 = 7 days total
+  if (step === 3) return daysDiff >= 5; // 7 + 5 = 12 days total
 
   return false;
 }
