@@ -144,7 +144,7 @@ export function formatNicheName(nicheStr = "") {
 export async function generateCompliantOutreachEmail(lead, config = {}) {
   const senderName = config.sender_name || "Muhammad Razi";
   const senderRole = config.sender_role || "Founder, Noryvex";
-  const customOfferDetails = config.custom_offer_details || "";
+  const senderEmail = config.sender_email || "razi@trynoryvex.com";
 
   const recipientName = lead.owner_name ? lead.owner_name.split(' ')[0] : "";
   const greeting = recipientName ? `Hi ${recipientName},` : "Hi there,";
@@ -152,13 +152,8 @@ export async function generateCompliantOutreachEmail(lead, config = {}) {
   const step = lead.sequence_step || 0;
   const nicheVars = getNicheVariables(lead.type || lead.niche || config.niche);
 
-  // Dynamic Solution Intro Line: Niche-aware per lead (never hardcoded dental)
-  const solutionIntro = customOfferDetails && customOfferDetails.length > 10
-    ? customOfferDetails
-    : `Our AI Receptionist is a 24/7 virtual assistant built for ${nicheVars.niche_plural}.`;
-
   // Anti-Fabrication Rule for Icebreaker:
-  // Only reference verified research/enrichment facts.
+  // Only reference verified research/enrichment facts. Never fabricate details.
   let icebreakerLine = "";
   if (lead.source_type === "linkedin_declared_need" && lead.linkedin_post_text) {
     const snippet = lead.linkedin_post_text.slice(0, 80).replace(/\n/g, " ").trim();
@@ -175,9 +170,9 @@ export async function generateCompliantOutreachEmail(lead, config = {}) {
   let subject = "";
   let body = "";
 
-  // 4-STEP SEQUENCE ENGINE GENERATION
+  // 4-STEP SEQUENCE ENGINE GENERATION (Match user template exactly)
   if (step === 0) {
-    // Step 1: Cold Outreach (Day 0, NO LINKS!)
+    // Step 1: Cold Outreach (Day 0, ZERO LINKS!)
     const subjects = [
       `quick question about ${company}`,
       `${company} + booking`,
@@ -186,23 +181,28 @@ export async function generateCompliantOutreachEmail(lead, config = {}) {
     const hash = Math.abs(company.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0));
     subject = subjects[hash % subjects.length];
 
-    body = `${greeting}\n\n${icebreakerLine}It's easy for calls to slip to voicemail during peak hours or after-hours when ${nicheVars.staff_role_plural} are busy with ${nicheVars.primary_activity}.\n\n${solutionIntro}\n\nIt answers FAQs about your ${nicheVars.service_type}, collects ${nicheVars.contact_details_type} details, and transfers urgent callers automatically so no ${nicheVars.inquiry_type} is lost.\n\nMind if I send over a quick 2-minute demo?\n\nBest,\n${senderName}\n${senderRole}`;
+    const bodyIcebreakerPart = icebreakerLine ? `${icebreakerLine}` : "";
+
+    body = `${greeting}\n\n${bodyIcebreakerPart}I run Noryvex — we build AI receptionists that answer calls and handle bookings automatically for ${nicheVars.niche_plural}, so nothing gets missed after hours.\n\nWorth a 2-minute look, or a quick call if useful?\n\n${senderName}\n${senderRole}\n${senderEmail} | trynoryvex.com`;
 
   } else if (step === 1) {
-    // Step 2: Follow-Up Check-In (Day 3, NO LINKS!)
+    // Step 2: Follow-Up Check-In (Day 3, ZERO LINKS!)
     subject = `following up`;
-    body = `${greeting}\n\nFollowing up on my note from earlier this week.\n\nDid you have a chance to see if missed calls or ${nicheVars.inquiry_type} backlog are something ${company} is looking to solve right now?\n\nMind if I send over a quick 2-minute preview?\n\nBest,\n${senderName}\n${senderRole}`;
+    const heyGreeting = recipientName ? `Hey ${recipientName},` : "Hey,";
+    body = `${heyGreeting} following up in case this got buried.\n\nA lot of ${nicheVars.niche_plural} lose a few bookings a week just from missed calls after hours. Curious if that's true for ${company} too.\n\n${senderName.split(' ')[0]}`;
 
   } else if (step === 2) {
     // Step 3: Show-and-Tell (Day 7, EXACTLY ONE LINK ALLOWED!)
     const demoLink = config.is_trial_campaign ? "https://trynoryvex.com/#trial" : "https://trynoryvex.com/#demo";
     subject = `how this actually works`;
-    body = `${greeting}\n\nThought it would be easier to show rather than explain.\n\nHere's a 90-second demo of how the AI receptionist handles incoming ${nicheVars.inquiry_type}s and takes ${nicheVars.booking_type} details automatically:\n${demoLink}\n\nWould this be useful for ${company}?\n\nLet me know if you'd rather not hear from me again.\n\nBest,\n${senderName}\n${senderRole}`;
+    const nameIntro = recipientName ? recipientName : "Hi";
+    body = `${nameIntro} — figured I'd show rather than explain.\n\nHere's a quick look at how it works: ${demoLink}\n\nHappy to set one up for ${company} if it looks useful. Let me know if you'd rather not hear from me again.\n\n${senderName.split(' ')[0]}`;
 
   } else {
-    // Step 4: Breakup Email (Day 12, NO LINKS!)
+    // Step 4: Breakup Email (Day 12, ZERO LINKS!)
     subject = `should I close the loop?`;
-    body = `${greeting}\n\nI haven't heard back, so I assume automated call answering and ${nicheVars.booking_type} capture isn't a priority for ${company} right now.\n\nI'll close your file and won't bug you again. If things change down the road, feel free to reach out anytime.\n\nBest,\n${senderName}\n${senderRole}`;
+    const nameIntro = recipientName ? recipientName : "Hi";
+    body = `${nameIntro} — I'll stop reaching out after this one.\n\nIf this isn't a priority for ${company} right now, no worries. If it is, just reply and I'll send over a couple ideas.\n\n${senderName.split(' ')[0]}`;
   }
 
   // --- SANITIZE & VERIFY HARD RULES ---

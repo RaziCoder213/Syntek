@@ -3380,10 +3380,21 @@ function getSmtpTransport(nodemailer, sender) {
     return nodemailer.createTransport({ host: "smtp.mail.me.com", port: 587, secure: false, auth: { user: sender.email, pass: sender.pass } });
   }
   const domain = email.split("@")[1] || "";
-  console.warn(`[SMTP] Unknown provider for ${email}  attempting smtp.${domain}:465`);
+  if (domain === "trynoryvex.com" || domain === "privateemail.com" || email.includes("privateemail")) {
+    return nodemailer.createTransport({
+      host: "mail.privateemail.com",
+      port: 465,
+      secure: true,
+      auth: { user: sender.email, pass: sender.pass },
+      tls: { rejectUnauthorized: false }
+    });
+  }
+
+  const defaultHost = process.env.SMTP_HOST || "mail.privateemail.com";
+  console.warn(`[SMTP] Custom domain for ${email} — defaulting to ${defaultHost}`);
   return nodemailer.createTransport({
-    host: `smtp.${domain}`,
-    port: 465,
+    host: defaultHost,
+    port: parseInt(process.env.SMTP_PORT) || 465,
     secure: true,
     auth: { user: sender.email, pass: sender.pass },
     tls: { rejectUnauthorized: false }
