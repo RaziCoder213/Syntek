@@ -2043,6 +2043,20 @@ app.delete("/api/leads/:id", authenticate, async (req, res) => {
   }
 });
 
+app.post("/api/leads/batch-delete", authenticate, async (req, res) => {
+  const { leadIds } = req.body;
+  if (!Array.isArray(leadIds) || leadIds.length === 0) {
+    return res.status(400).json({ error: "leadIds array is required" });
+  }
+  try {
+    const result = await pool.query("DELETE FROM leads WHERE id = ANY($1) AND user_id = $2 RETURNING id", [leadIds, req.userId]);
+    await pool.query("DELETE FROM emails WHERE user_id = $1 AND lead_id = ANY($2)", [req.userId, leadIds]).catch(() => {});
+    res.json({ success: true, message: `Successfully deleted ${result.rowCount} leads.`, deletedCount: result.rowCount });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET Chat history for a specific lead
 app.get("/api/leads/:leadId/chat", authenticate, async (req, res) => {
   const { leadId } = req.params;

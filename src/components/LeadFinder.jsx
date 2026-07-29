@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import ImportLeadsModal from "./ImportLeadsModal";
 
 /* ─── Email Composer Modal ─── */
 function EmailComposer({ lead, settings, onClose, onSent, showToast }) {
@@ -894,6 +895,7 @@ export default function LeadFinder({ leads, setLeads, settings, showToast }) {
   const [bulkGenerating, setBulkGen]    = useState(false);
   const [elapsedTime, setElapsedTime]   = useState(0);
   const [isFullscreenLogs, setIsFullscreenLogs] = useState(false);
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
 
   /* Timer Effect */
   useEffect(() => {
@@ -1273,6 +1275,35 @@ Rules:
     } catch { showToast("Failed to delete lead.", "danger"); }
   }
 
+  /* Batch delete selected leads */
+  async function handleBatchDelete() {
+    if (selectedIds.size === 0) return;
+    const count = selectedIds.size;
+    if (!window.confirm(`Are you sure you want to delete ${count} selected lead(s)? This action cannot be undone.`)) return;
+
+    const idsArray = Array.from(selectedIds);
+    try {
+      const res = await fetch("/api/leads/batch-delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leadIds: idsArray })
+      });
+      if (!res.ok) throw new Error("Batch delete failed");
+      setLeads(prev => prev.filter(l => !selectedIds.has(l.id)));
+      setSelectedIds(new Set());
+      showToast(`Deleted ${count} leads successfully.`, "success");
+    } catch (err) {
+      showToast("Failed to delete selected leads: " + err.message, "danger");
+    }
+  }
+
+  /* Export leads to CSV */
+  function handleExportCsv() {
+    const idsParam = selectedIds.size > 0 ? `?ids=${Array.from(selectedIds).join(",")}` : "";
+    window.open(`/api/leads/export${idsParam}`, "_blank");
+    showToast(`Downloading CSV export for ${selectedIds.size > 0 ? selectedIds.size : filteredLeads.length} leads...`, "info");
+  }
+
   const wsColor = { active: "badge-success", no_website: "badge-danger", down: "badge-warning" };
   const statusColor = { "not contacted": "badge-neutral", contacted: "badge-brand", replied: "badge-success", no_email: "badge-warning" };
 
@@ -1519,6 +1550,23 @@ Rules:
             <option value="replied">Replied</option>
             <option value="no_email">No Email</option>
           </select>
+          {/* Import / Export Buttons */}
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() => setIsImportModalOpen(true)}
+            title="Import Leads from CSV / JSON"
+          >
+            📤 Import
+          </button>
+
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={handleExportCsv}
+            title="Export Leads to CSV"
+          >
+            📥 Export CSV
+          </button>
+
           {selectedIds.size > 0 && (
             <>
               <button
@@ -1529,6 +1577,13 @@ Rules:
                 {bulkGenerating
                   ? <><span className="spinner spinner-sm" /> Generating...</>
                   : `⚡ Send ${selectedIds.size} Emails`}
+              </button>
+              <button
+                className="btn btn-danger btn-sm"
+                onClick={handleBatchDelete}
+                title="Delete Selected Leads"
+              >
+                🗑️ Delete ({selectedIds.size})
               </button>
               <button className="btn btn-ghost btn-sm" onClick={() => setSelectedIds(new Set())}>
                 Deselect
@@ -1823,6 +1878,24 @@ Rules:
           </div>
         </div>
       )}
+
+      {/* ── Import Leads Modal ── */}
+      <ImportLeadsModal
+        isOpen={isImportModalOpen}
+        onClose={() => setIsImportModalOpen(false)}
+        onSuccess={async () => {
+          try {
+            const res = await fetch("/api/leads");
+            if (res.ok) {
+              const fresh = await res.json();
+              setLeads(fresh.map(l => ({ ...l, rating: l.rating ? parseFloat(l.rating) : 4.0, reviews: l.reviews ? parseInt(l.reviews) : 0 })));
+            }
+          } catch (e) {
+            console.error("Failed refreshing leads after import:", e);
+          }
+        }}
+        showToast={showToast}
+      />
     </div>
   );
 }
