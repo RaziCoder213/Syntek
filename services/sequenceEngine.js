@@ -1,6 +1,7 @@
 import pg from "pg";
 import dotenv from "dotenv";
 import { generateCompliantOutreachEmail } from "./aiCopywriterService.js";
+import { reverifyLeadEmailMx } from "./emailVerificationService.js";
 
 dotenv.config();
 const { Pool } = pg;
@@ -60,7 +61,7 @@ export function calculateGraduatedCap(config, daysActive = 1) {
 }
 
 /**
- * Sequence Step Timing Checks (Section 4)
+ * Sequence Step Timing & MX Re-Verification Checks (Section 4)
  * Days: Step 0 (Day 0), Step 1 (Day 3), Step 2 (Day 7), Step 3 (Day 12)
  */
 export function isLeadDueForNextStep(lead) {
@@ -78,4 +79,22 @@ export function isLeadDueForNextStep(lead) {
   if (step === 3) return daysDiff >= 5; // 7 + 5 = 12 days total
 
   return false;
+}
+
+/**
+ * Lightweight MX re-verification before firing sequence step.
+ * Returns true if lead is due AND MX record resolves.
+ */
+export async function isLeadDueForNextStepWithMxCheck(lead) {
+  const isDue = isLeadDueForNextStep(lead);
+  if (!isDue) return false;
+
+  if (lead.email) {
+    const mxOk = await reverifyLeadEmailMx(lead.email);
+    if (!mxOk) {
+      console.warn(`[SEQUENCE ENGINE] MX re-verification failed for lead ${lead.id} (${lead.email}). Halting sequence.`);
+      return false;
+    }
+  }
+  return true;
 }

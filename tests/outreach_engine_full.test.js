@@ -80,13 +80,22 @@ async function runFullEngineTestSuite() {
     console.log('✅ PASS: Replied lead hard-excluded with score -1000.');
   }
 
-  const inboundLead = { source_type: "inbound" };
+  const inboundLead = { source_type: "inbound", email_verification_status: "verified" };
   const inboundResult = calculateLeadTierAndScore(inboundLead);
   if (inboundResult.tier !== 5 || inboundResult.shouldQueue !== true) {
     console.error('❌ FAIL: Tier 5 Inbound lead auto-queue failed!');
     passed = false;
   } else {
-    console.log('✅ PASS: Tier 5 Inbound lead auto-queued directly (skips scoring gate).');
+    console.log('✅ PASS: Tier 5 Inbound lead (verified email) auto-queued directly.');
+  }
+
+  const unverifiedInboundLead = { source_type: "inbound", email_verification_status: "invalid" };
+  const unverifiedResult = calculateLeadTierAndScore(unverifiedInboundLead);
+  if (unverifiedResult.score !== -1000 || unverifiedResult.shouldQueue !== false) {
+    console.error('❌ FAIL: Unverified Inbound lead failed to hard-exclude!');
+    passed = false;
+  } else {
+    console.log('✅ PASS: Unverified Inbound lead hard-excluded with score -1000 (flagged for manual outreach).');
   }
 
   // TEST 3: Sequence Engine Graduated Cap & Compliance Footer

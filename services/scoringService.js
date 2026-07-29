@@ -85,7 +85,24 @@ export function calculateLeadTierAndScore(lead) {
     }
   }
 
-  // Tier 4 & Tier 5 skip scoring gate and auto-queue directly
+  // Hard exclusion 3: Email Verification Status Failure (Hard Gate for ALL Tiers, including Tier 4/5)
+  const verificationStatus = (lead.email_verification_status || "").toLowerCase().trim();
+  const isEmailConfirmed = lead.email_confirmed === true || lead.email_confirmed === "true";
+
+  if (verificationStatus === "invalid" || verificationStatus === "failed" || (!verificationStatus && !isEmailConfirmed)) {
+    const isHighIntentTier = tier >= 4;
+    return {
+      tier,
+      score: -1000,
+      shouldQueue: false,
+      isCompetitor: false,
+      statusReason: isHighIntentTier
+        ? "Hard Excluded (Unverified Email — Flagged for Manual Channel Outreach e.g. LinkedIn/Phone)"
+        : "Hard Excluded (Unverified Email / Failed MX Lookup)"
+    };
+  }
+
+  // Tier 4 & Tier 5 skip scoring gate and auto-queue directly (if email is verified)
   if (tier >= 4) {
     return {
       tier,
