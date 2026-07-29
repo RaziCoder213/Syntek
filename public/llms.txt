@@ -2,6 +2,11 @@
 
 Our AI Receptionist is a 24/7 virtual assistant built for small businesses. It answers every incoming call, even when your team are busy with serving customers, so you never miss a customer inquiry or booking. It answers common questions about your services, hours, location, and other FAQs using your business's own information. It can also take appointment or inquiry inquiries, collect customer details, and qualify callers before passing them to your team. Every conversation can be automatically saved to Google Sheets or your CRM. If a caller needs to speak with someone directly, the AI transfers the call to your staff. Available 24/7, it reduces missed calls and saves your front desk time — without replacing your team.
 
+## Trial Terms
+- 7 days or 30 minutes of call time, whichever comes first.
+- No credit card required. No obligation.
+- We build and configure it — not self-serve.
+
 ## Niche-Specific Solutions
 
 ### Dental & Medical Clinics

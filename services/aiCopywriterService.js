@@ -1,6 +1,7 @@
 /**
  * Syntek AI Copywriter Service (Gemini Engine)
  * Enforces Anti-Fabrication Rules, Niche-Aware Framing, Master Description Template, and Clean Formatting.
+ * Supports Standard Demo Sequence & Trial Offer Sequence variants.
  */
 
 // Forbidden AI-tell phrases that will trigger auto-sanitization
@@ -16,6 +17,15 @@ const FORBIDDEN_AI_PHRASES = [
   /synergy/i,
   /paradigm/i
 ];
+
+/**
+ * TRIAL TERMS (Must match exactly across email, website, llms.txt)
+ */
+export const TRIAL_TERMS = {
+  duration: "7 days or 30 minutes of call time, whichever comes first.",
+  credit_card: "No credit card required. No obligation.",
+  setup: "We build and configure it — not self-serve."
+};
 
 /**
  * NICHE VARIABLE MAPPING (Config dictionary for master description & sequence engine)
@@ -127,7 +137,7 @@ export function getNicheVariables(nicheInput = "") {
 export function getMasterDescription(nicheInput = "") {
   const vars = getNicheVariables(nicheInput);
 
-  return `Our AI Receptionist is a 24/7 virtual assistant built for ${vars.niche_plural}. It answers every incoming call, even when your ${vars.staff_role_plural} are busy with ${vars.primary_activity}, so you never miss a ${vars.inquiry_type} or booking. It answers common questions about your ${vars.service_type}, hours, location, and other FAQs using your business's own information. It can also take ${vars.booking_type} inquiries, collect ${vars.contact_details_type} details, and qualify callers before passing them to your team. Every conversation can be automatically saved to Google Sheets or your CRM. If a caller needs to speak with someone directly, the AI transfers the call to your staff. Available 24/7, it reduces missed calls and saves your front desk time — without replacing your team.`;
+  return `Our AI Receptionist is a 24/7 virtual assistant built for ${vars.niche_plural}. It answers every incoming call, even when your ${vars.staff_role_plural} are busy with ${vars.primary_activity}, so you never miss a ${vars.inquiry_type} or booking. It answers common questions about your ${vars.service_type}, hours, location, and other FAQs using your business's own information. It can also take ${vars.booking_type} inquiries, collect ${vars.contact_details_type} details, and qualify callers before passing them to your team. Every conversation can be automatically saved to Google Sheets or your CRM. If a caller needs to speak with someone directly, the AI transfers the call to your staff. Available 24/7, it reduces missed calls and saves your front desk time — without replacing your team.\n\nTrial Terms:\n- ${TRIAL_TERMS.duration}\n- ${TRIAL_TERMS.credit_card}\n- ${TRIAL_TERMS.setup}`;
 }
 
 /**
@@ -140,6 +150,7 @@ export function formatNicheName(nicheStr = "") {
 
 /**
  * Generate compliant outreach email based on lead data, source tier, and sequence step.
+ * Supports Standard Demo Variant & Trial Offer Variant.
  */
 export async function generateCompliantOutreachEmail(lead, config = {}) {
   const senderName = config.sender_name || "Muhammad Razi";
@@ -152,8 +163,13 @@ export async function generateCompliantOutreachEmail(lead, config = {}) {
   const step = lead.sequence_step || 0;
   const nicheVars = getNicheVariables(lead.type || lead.niche || config.niche);
 
+  // Variant Selection: Explicit config preference or balanced random allocation per lead
+  const hash = Math.abs((company + (lead.id || "")).split('').reduce((acc, c) => acc + c.charCodeAt(0), 0));
+  const isTrialVariant = config.is_trial_campaign === true || 
+    config.campaign_variant === "trial" || 
+    (config.campaign_variant !== "standard" && config.is_trial_campaign !== false && hash % 2 === 1);
+
   // Anti-Fabrication Rule for Icebreaker:
-  // Only reference verified research/enrichment facts. Never fabricate details.
   let icebreakerLine = "";
   if (lead.source_type === "linkedin_declared_need" && lead.linkedin_post_text) {
     const snippet = lead.linkedin_post_text.slice(0, 80).replace(/\n/g, " ").trim();
@@ -169,40 +185,71 @@ export async function generateCompliantOutreachEmail(lead, config = {}) {
 
   let subject = "";
   let body = "";
+  const bodyIcebreakerPart = icebreakerLine ? `${icebreakerLine}` : "";
+  const nameIntro = recipientName ? recipientName : "Hi";
+  const heyGreeting = recipientName ? `Hey ${recipientName},` : "Hey,";
 
-  // 4-STEP SEQUENCE ENGINE GENERATION (Match user template exactly)
-  if (step === 0) {
-    // Step 1: Cold Outreach (Day 0, ZERO LINKS!)
-    const subjects = [
-      `quick question about ${company}`,
-      `${company} + booking`,
-      `saw ${company} — one question`
-    ];
-    const hash = Math.abs(company.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0));
-    subject = subjects[hash % subjects.length];
+  if (isTrialVariant) {
+    // ==========================================
+    // VARIANT B: FREE TRIAL OFFER SEQUENCE
+    // ==========================================
+    if (step === 0) {
+      // Step 1: Trial Offer Cold Outreach (ZERO LINKS!)
+      const trialSubjects = [
+        `free trial for ${company}'s calls`,
+        `try this on ${company}'s calls, free for a week`,
+        `${recipientName || company}, want to test this on real calls?`
+      ];
+      subject = trialSubjects[hash % trialSubjects.length];
 
-    const bodyIcebreakerPart = icebreakerLine ? `${icebreakerLine}` : "";
+      body = `${greeting}\n\n${bodyIcebreakerPart}I run Noryvex — we build AI receptionists for ${nicheVars.niche_plural}. Instead of just describing it, want to try it on ${company}'s actual calls for a week, free? We set it up, you just use it — no card, no commitment.\n\nWorth a quick reply if you're up for it?\n\n${senderName}\n${senderRole}\n${senderEmail} | trynoryvex.com`;
 
-    body = `${greeting}\n\n${bodyIcebreakerPart}I run Noryvex — we build AI receptionists that answer calls and handle bookings automatically for ${nicheVars.niche_plural}, so nothing gets missed after hours.\n\nWorth a 2-minute look, or a quick call if useful?\n\n${senderName}\n${senderRole}\n${senderEmail} | trynoryvex.com`;
+    } else if (step === 1) {
+      // Step 2: Trial Follow-Up (ZERO LINKS!)
+      subject = `following up`;
+      body = `${heyGreeting} following up on the free trial offer.\n\nTakes about 24-48 hours on our end to set up once you say go — happy to answer any questions first if useful.\n\n${senderName.split(' ')[0]}`;
 
-  } else if (step === 1) {
-    // Step 2: Follow-Up Check-In (Day 3, ZERO LINKS!)
-    subject = `following up`;
-    const heyGreeting = recipientName ? `Hey ${recipientName},` : "Hey,";
-    body = `${heyGreeting} following up in case this got buried.\n\nA lot of ${nicheVars.niche_plural} lose a few bookings a week just from missed calls after hours. Curious if that's true for ${company} too.\n\n${senderName.split(' ')[0]}`;
+    } else if (step === 2) {
+      // Step 3: How Trial Works (EXACTLY ONE LINK ALLOWED!)
+      subject = `how the trial works`;
+      body = `${nameIntro} — here's exactly what's included and how to start it:\nhttps://trynoryvex.com/#trial\n\nLet me know if you'd rather not hear from me again.\n\n${senderName.split(' ')[0]}`;
 
-  } else if (step === 2) {
-    // Step 3: Show-and-Tell (Day 7, EXACTLY ONE LINK ALLOWED!)
-    const demoLink = config.is_trial_campaign ? "https://trynoryvex.com/#trial" : "https://trynoryvex.com/#demo";
-    subject = `how this actually works`;
-    const nameIntro = recipientName ? recipientName : "Hi";
-    body = `${nameIntro} — figured I'd show rather than explain.\n\nHere's a quick look at how it works: ${demoLink}\n\nHappy to set one up for ${company} if it looks useful. Let me know if you'd rather not hear from me again.\n\n${senderName.split(' ')[0]}`;
+    } else {
+      // Step 4: Trial Breakup (ZERO LINKS!)
+      subject = `should I close the loop?`;
+      body = `${nameIntro} — I'll stop reaching out after this one. If it's not the right time, no worries. If it is later, just reply.\n\n${senderName.split(' ')[0]}`;
+    }
 
   } else {
-    // Step 4: Breakup Email (Day 12, ZERO LINKS!)
-    subject = `should I close the loop?`;
-    const nameIntro = recipientName ? recipientName : "Hi";
-    body = `${nameIntro} — I'll stop reaching out after this one.\n\nIf this isn't a priority for ${company} right now, no worries. If it is, just reply and I'll send over a couple ideas.\n\n${senderName.split(' ')[0]}`;
+    // ==========================================
+    // VARIANT A: STANDARD DEMO OUTREACH SEQUENCE
+    // ==========================================
+    if (step === 0) {
+      // Step 1: Cold Outreach (ZERO LINKS!)
+      const standardSubjects = [
+        `quick question about ${company}`,
+        `${company} + booking`,
+        `saw ${company} — one question`
+      ];
+      subject = standardSubjects[hash % standardSubjects.length];
+
+      body = `${greeting}\n\n${bodyIcebreakerPart}I run Noryvex — we build AI receptionists that answer calls and handle bookings automatically for ${nicheVars.niche_plural}, so nothing gets missed after hours.\n\nWorth a 2-minute look, or a quick call if useful?\n\n${senderName}\n${senderRole}\n${senderEmail} | trynoryvex.com`;
+
+    } else if (step === 1) {
+      // Step 2: Follow-Up Check-In (ZERO LINKS!)
+      subject = `following up`;
+      body = `${heyGreeting} following up in case this got buried.\n\nA lot of ${nicheVars.niche_plural} lose a few bookings a week just from missed calls after hours. Curious if that's true for ${company} too.\n\n${senderName.split(' ')[0]}`;
+
+    } else if (step === 2) {
+      // Step 3: Show-and-Tell (EXACTLY ONE LINK ALLOWED!)
+      subject = `how this actually works`;
+      body = `${nameIntro} — figured I'd show rather than explain.\n\nHere's a quick look at how it works: https://trynoryvex.com/#demo\n\nHappy to set one up for ${company} if it looks useful. Let me know if you'd rather not hear from me again.\n\n${senderName.split(' ')[0]}`;
+
+    } else {
+      // Step 4: Breakup Email (ZERO LINKS!)
+      subject = `should I close the loop?`;
+      body = `${nameIntro} — I'll stop reaching out after this one.\n\nIf this isn't a priority for ${company} right now, no worries. If it is, just reply and I'll send over a couple ideas.\n\n${senderName.split(' ')[0]}`;
+    }
   }
 
   // --- SANITIZE & VERIFY HARD RULES ---
@@ -219,5 +266,5 @@ export async function generateCompliantOutreachEmail(lead, config = {}) {
     console.warn(`[AI COPYWRITER] Body exceeds 120 words (${wordCount} words). Trimming.`);
   }
 
-  return { subject, body, wordCount };
+  return { subject, body, wordCount, variant: isTrialVariant ? "trial" : "standard" };
 }

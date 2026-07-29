@@ -123,8 +123,8 @@ export async function runRetroactiveEmailVerificationCleanup(pool) {
   let unknownCount = 0;
   const invalidLeadsSummary = [];
 
-  // Batch process 10 leads concurrently
-  const BATCH_SIZE = 10;
+  // Batch process 2 leads at a time to respect Supabase pool limits
+  const BATCH_SIZE = 2;
   for (let i = 0; i < leads.length; i += BATCH_SIZE) {
     const batch = leads.slice(i, i + BATCH_SIZE);
     await Promise.all(batch.map(async (lead) => {

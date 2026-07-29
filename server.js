@@ -13,7 +13,7 @@ import { spawn } from "child_process";
 import bcryptjs from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { runScraperPipeline } from "./services/pipelineService.js";
-import { getMasterDescription, NICHE_MAPPING, resolveNicheKey } from "./services/aiCopywriterService.js";
+import { getMasterDescription, NICHE_MAPPING, resolveNicheKey, TRIAL_TERMS } from "./services/aiCopywriterService.js";
 import { runRetroactiveEmailVerificationCleanup } from "./services/emailVerificationService.js";
 
 dotenv.config();
@@ -7589,6 +7589,7 @@ app.get("/api/solutions", (req, res) => {
     success: true,
     nicheKey: key,
     variables: vars,
+    trialTerms: TRIAL_TERMS,
     masterDescription: description
   });
 });
@@ -7602,10 +7603,7 @@ app.get("/*splat", (req, res) => {
 
 
 // App initialization
-setupDatabase().then(async () => {
-  await runRetroactiveEmailVerificationCleanup(pool).catch(err => {
-    console.warn("[MX CLEANUP WARNING] Background cleanup warning:", err.message);
-  });
+setupDatabase().then(() => {
   const server = app.listen(PORT, () => {
     console.log(`Syntek Backend Express server running on port ${PORT}`);
   });
@@ -7613,6 +7611,11 @@ setupDatabase().then(async () => {
   server.keepAliveTimeout = 900000; // 15 minutes
   server.headersTimeout = 905000; // 15 minutes + padding
   startCronScheduler();
+
+  // Run retroactive MX verification cleanup in background
+  runRetroactiveEmailVerificationCleanup(pool).catch(err => {
+    console.warn("[MX CLEANUP WARNING] Background cleanup warning:", err.message);
+  });
 });
 
 
