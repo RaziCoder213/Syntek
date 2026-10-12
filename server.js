@@ -156,7 +156,7 @@ function calculateLeadTierAndScore(lead) {
 
 const app = express();
 app.set('trust proxy', true);
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 700;
 
 const allowedOrigin = process.env.FRONTEND_URL || "*";
 app.use(cors({
